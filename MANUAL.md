@@ -15,8 +15,9 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 | STEP/IGES 파일 | 한 폴더에 모아 두면 편합니다 (예: `C:\parts`) |
 
 ## 1. 코드 내려받기
-1. 브라우저에서 GitHub에 로그인하고 저장소 페이지를 엽니다.
+1. 브라우저에서 저장소 페이지 https://github.com/wind1022-cmd/steprecon 를 엽니다. 로그인은 필요 없습니다.
 2. 초록색 **Code** 버튼 → **Download ZIP**.
+   (바로 받기: https://github.com/wind1022-cmd/steprecon/archive/refs/heads/main.zip)
 3. 받은 ZIP을 **풀기 전에** 마우스 오른쪽 버튼 → **속성** → 아래쪽 **차단 해제**에 체크 → 확인.
    (이 항목이 안 보이면 건너뛰어도 됩니다. 체크해 두면 뒤에서 "스크립트 차단" 문제가 줄어듭니다.)
 4. 압축을 풉니다. `steprecon-main` 폴더가 생깁니다. 경로에 한글이나 공백이 없는 곳을 권장합니다 (예: `C:\work\steprecon-main`).
