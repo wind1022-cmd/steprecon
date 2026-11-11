@@ -679,5 +679,27 @@ class Session:
     def save(self, path):
         self.doc.recompute()
         self.doc.saveAs(path)
+        try:
+            self._write_gui_visibility(path)
+        except Exception:
+            pass    # the model itself is saved; only the display defaults are missing
         return {"ok": True, "path": path}
+
+    def _write_gui_visibility(self, path):
+        """A file saved without the GUI has no display data, and FreeCAD then opens it with every Body and
+        feature hidden and only the sketches shown ("just lines"). Add the GUI part so each body's result shows."""
+        import zipfile
+        rows = []
+        for o in self.doc.Objects:
+            is_body = o.TypeId == "PartDesign::Body"
+            vis = is_body or any(b.Tip == o for b in self.bodies)
+            rows.append('<ViewProvider name="%s" expanded="%d"><Properties Count="1" TransientCount="0">'
+                        '<Property name="Visibility" type="App::PropertyBool" status="1"><Bool value="%s"/>'
+                        '</Property></Properties></ViewProvider>' % (o.Name, is_body, "true" if vis else "false"))
+        xml = ('<?xml version="1.0" encoding="utf-8"?>\n<Document SchemaVersion="1">\n'
+               '<ViewProviderData Count="%d">\n%s\n</ViewProviderData>\n<Camera settings=""/>\n</Document>\n'
+               % (len(rows), "\n".join(rows)))
+        with zipfile.ZipFile(path, "a", zipfile.ZIP_DEFLATED) as z:
+            if "GuiDocument.xml" not in z.namelist():
+                z.writestr("GuiDocument.xml", xml)
 

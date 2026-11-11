@@ -40,7 +40,7 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 ```
 .\fc.cmd run_tests.py
 ```
-마지막 줄에 `12/12 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
+마지막 줄에 `13/13 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
 
 ## 4. 로컬 AI(Ollama) 준비
 1. https://ollama.com 에서 Ollama를 받아 설치합니다.
@@ -131,6 +131,7 @@ PowerShell 실행 정책과 무관하게 동작합니다. 정책상 허용되는
 | 모델이 지침을 무시하는 듯함 | 4-2의 `OLLAMA_CONTEXT_LENGTH` 설정 후 Ollama를 재시작했는지 확인. 실행 시작 때 나오는 `prompt is about N tokens`보다 커야 합니다 |
 | 너무 느림 | GPU를 쓰는지 확인(`ollama ps`의 PROCESSOR 열). `--turns`를 줄이거나 더 작은/양자화된 모델 사용 |
 | 계속 `converged=False` | `transcript.json`으로 어디서 막히는지 확인. 형상이 회전체·패턴·곡면을 포함하면 `basic` 도구로는 못 만듭니다(`--profile full` + 큰 모델 필요) |
+| FreeCAD에서 열었더니 선(스케치)만 보임 | 예전 버전으로 만든 파일입니다. 모델은 들어 있고 표시만 꺼진 상태입니다. 왼쪽 트리에서 `Body`를 선택하고 스페이스바를 누르면 보입니다. 최신 코드를 다시 받으면 처음부터 솔리드가 보이게 저장됩니다 |
 | 테스트가 일부 실패 | FreeCAD 버전이 1.x인지 확인(`.\fc.cmd -c "import FreeCAD; print(FreeCAD.Version()[:3])"`) |
 
 ## 알아둘 한계
