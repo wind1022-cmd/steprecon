@@ -4,6 +4,9 @@
 다시 모델링해서, **수정 가능한 피처 트리(.FCStd)** 로 만듭니다. 원본과의 차이(XOR 부피, 면 개수)를 매번 측정해
 틀린 부분을 모델에게 알려 주는 폐루프 구조입니다.
 
+> **처음 쓰는 PC라면 [MANUAL.md](MANUAL.md)부터 보세요.** 내려받기 → 설치 → 로컬 AI 준비 → 내 STEP 폴더 실행 →
+> 결과 보기까지 순서대로 적혀 있고, PowerShell 스크립트(.ps1) 실행이 막혔을 때의 방법도 있습니다.
+
 LLM은 교체 가능합니다.
 
 | 백엔드 | 설명 |
@@ -28,6 +31,9 @@ LLM은 교체 가능합니다.
 .\fc.ps1 run.py part.step       # = "<FreeCAD>\bin\python.exe" run.py part.step
 ```
 FreeCAD가 특이한 위치에 있으면 `$env:FREECAD_PYTHON = "D:\FreeCAD\bin\python.exe"` 로 지정하세요.
+
+**.ps1 실행이 막힌 PC**: `fc.ps1` 대신 `.\fc.cmd`를 쓰면 됩니다(같은 동작, PowerShell 실행 정책과 무관).
+`setup.ps1` 없이도 FreeCAD를 설치하고 `.\fc.cmd run_tests.py`만 통과하면 준비 끝입니다. 자세한 건 MANUAL.md.
 
 **Linux / macOS**
 ```bash
@@ -142,7 +148,8 @@ step_recon/
   cli.py       run.py / eval_batch.py 공통 옵션
   dataset.py, fusion.py   분류기(prismatic/revolved/freeform/mixed)와 Fusion 어댑터
   synth.py     정답이 있는 합성 부품 생성
-run.py  eval_batch.py  fusion_index.py  index_dataset.py  download_fusion.py  run_tests.py
+run.py  eval_batch.py  make_synth.py  fusion_index.py  index_dataset.py  download_fusion.py  run_tests.py
+fc.ps1 / fc.cmd / fc.sh   FreeCAD 번들 Python으로 스크립트 실행      MANUAL.md   처음부터 따라 하는 설명서
 tests/   dev/
 ```
 
@@ -169,6 +176,7 @@ tests/   dev/
 | 증상 | 조치 |
 |---|---|
 | `FreeCAD was not found` | FreeCAD 설치 확인, `FREECAD_BIN`(FreeCAD.pyd 폴더) 또는 `FREECAD_PYTHON` 지정 |
+| `.ps1` 실행이 차단됨 | `.\fc.cmd <스크립트> ...` 사용, 또는 `powershell -ExecutionPolicy Bypass -File .\fc.ps1 ...` (MANUAL.md) |
 | `cannot reach LLM server` | Ollama 실행 여부(`ollama list`), `--base-url` 확인 |
 | 로컬 모델이 도구를 안 부름 | `--tool-mode text`, `--profile basic`, transcript 확인 |
 | 모델이 지침을 무시하는 듯함 | 컨텍스트 길이 부족 → `OLLAMA_CONTEXT_LENGTH` 상향 후 Ollama 재시작 |
