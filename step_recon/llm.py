@@ -101,7 +101,7 @@ class AnthropicHttpBackend:
     token) or ANTHROPIC_API_KEY (sent as x-api-key)."""
     name = "anthropic"
 
-    def __init__(self, model=None, base_url=None, max_tokens=4096, timeout=1800, temperature=None, **_):
+    def __init__(self, model=None, base_url=None, max_tokens=16384, timeout=1800, temperature=None, **_):
         self.model = (model or os.environ.get("STEPRECON_MODEL") or os.environ.get("ANTHROPIC_MODEL")
                       or "claude-opus-5-5")
         self.base_url = (base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com").rstrip("/")
@@ -150,6 +150,12 @@ class AnthropicHttpBackend:
         if self.temperature is not None:
             payload["temperature"] = self.temperature
         data = self._post(payload)
+        # a reasoning model can spend the whole budget thinking and return nothing: ask again with more room
+        # instead of wasting a turn
+        while data.get("stop_reason") == "max_tokens" and self.max_tokens < 64000 \
+                and not any(blk.get("type") == "tool_use" for blk in data.get("content") or []):
+            self.max_tokens = payload["max_tokens"] = min(self.max_tokens * 2, 64000)
+            data = self._post(payload)
         content = data.get("content") or []
         calls, text = [], ""
         for blk in content:
