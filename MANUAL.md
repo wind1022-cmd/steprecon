@@ -40,7 +40,7 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 ```
 .\fc.cmd run_tests.py
 ```
-마지막 줄에 `14/14 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
+마지막 줄에 `15/15 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
 
 ## 4. 로컬 AI(Ollama) 준비
 1. https://ollama.com 에서 Ollama를 받아 설치합니다.
@@ -86,6 +86,25 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 도구 결과마다 원본과의 차이(`state`)가 자동으로 붙고, 같아지는 순간 저절로 저장하고 끝납니다. 모델이 `compare`나 `finish`를 따로 부를 필요가 없습니다.
 
 오래 걸리는 작업입니다. 중간에 멈추려면 `Ctrl+C`를 누르고, 이어서 하려면 `--skip-done`을 붙여 다시 실행하세요.
+
+### 5-3. 로컬 모델 대신 사내 LLM 게이트웨이 쓰기 (Anthropic 방식)
+Claude Code를 `ANTHROPIC_BASE_URL`과 `ANTHROPIC_AUTH_TOKEN`으로 연결해 쓰는 게이트웨이가 있다면, 같은 주소와 토큰으로
+이 프로그램도 돌릴 수 있습니다. Ollama도, 추가 설치도 필요 없습니다. Claude가 아닌 모델이어도 됩니다.
+
+PowerShell 창에서(그 창에서만 유효하고, 파일에 남지 않습니다):
+```
+$env:ANTHROPIC_BASE_URL = "https://<게이트웨이 주소>"
+$env:ANTHROPIC_AUTH_TOKEN = "<토큰>"
+.\fc.cmd run.py C:\parts --backend anthropic --model "<게이트웨이의 모델 이름>" --attempts 3 --turns 20 --out out_parts
+```
+cmd 창이면 `set ANTHROPIC_BASE_URL=https://<게이트웨이 주소>`, `set ANTHROPIC_AUTH_TOKEN=<토큰>`으로 씁니다.
+
+- 주소와 모델 이름은 Claude Code 설정(`settings.json`의 `env`)에 적힌 값을 그대로 씁니다.
+- **토큰을 파일이나 명령 기록, 화면 캡처에 남기지 마세요.** 이 저장소 폴더 안에도 적어 두지 마세요.
+- Claude가 아닌 모델은 기본이 `basic`(도구 9개)입니다. 큰 모델이면 `--profile full`을 붙여 보세요.
+- 부품의 형상 요약(치수, 면 목록)이 게이트웨이로 전송됩니다. 사내 규정상 허용되는 용도인지 확인하세요.
+- 게이트웨이가 OpenAI 방식(`/v1/chat/completions`)도 지원하면 `--backend openai --base-url https://<주소>/v1`과
+  `STEPRECON_API_KEY` 환경 변수로도 됩니다.
 
 ## 6. 결과 보기
 | 파일 | 내용 |

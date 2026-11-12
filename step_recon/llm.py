@@ -1,6 +1,7 @@
 """LLM backends for the reconstruction agent.
 
-  anthropic : Claude API (needs ANTHROPIC_API_KEY)
+  anthropic : Claude API (needs ANTHROPIC_API_KEY), or any gateway speaking the Anthropic Messages protocol
+              (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, as used for Claude Code) - then standard library only
   openai    : any OpenAI-compatible /chat/completions server -- Ollama, LM Studio, vLLM, llama.cpp server,
               OpenAI itself. Standard library only (no extra pip packages).
 
@@ -15,6 +16,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -88,6 +90,108 @@ class AnthropicBackend:
 
     def transcript(self):
         return _plain(self.messages)
+
+
+class AnthropicHttpBackend:
+    """Anthropic Messages API over plain HTTP (standard library only, no SDK).
+
+    For gateways that speak the Anthropic protocol and serve other models - the same kind of endpoint Claude Code
+    is pointed at with ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN - and for the Claude API when the SDK is missing.
+    Environment: ANTHROPIC_BASE_URL (default https://api.anthropic.com), ANTHROPIC_AUTH_TOKEN (sent as a Bearer
+    token) or ANTHROPIC_API_KEY (sent as x-api-key)."""
+    name = "anthropic"
+
+    def __init__(self, model=None, base_url=None, max_tokens=4096, timeout=1800, temperature=None, **_):
+        self.model = (model or os.environ.get("STEPRECON_MODEL") or os.environ.get("ANTHROPIC_MODEL")
+                      or "claude-opus-5-5")
+        self.base_url = (base_url or os.environ.get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com").rstrip("/")
+        self.token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
+        self.api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not (self.token or self.api_key):
+            raise RuntimeError("set ANTHROPIC_AUTH_TOKEN (gateway) or ANTHROPIC_API_KEY (Claude API)")
+        self.max_tokens, self.timeout, self.temperature = max_tokens, timeout, temperature
+        self.custom = "api.anthropic.com" not in self.base_url
+        self.last_info = ""
+
+    def start(self, system, tools, user_text):
+        # prompt caching is a Claude API feature; other models behind a gateway may reject the field
+        self.system = system if self.custom else [{"type": "text", "text": system,
+                                                   "cache_control": {"type": "ephemeral"}}]
+        self.tools = tools
+        self.messages = [{"role": "user", "content": user_text}]
+
+    def _post(self, payload):
+        url = self.base_url + ("/messages" if self.base_url.endswith("/v1") else "/v1/messages")
+        headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        body = json.dumps(payload).encode("utf-8")
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers),
+                                            timeout=self.timeout) as r:
+                    return json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                text = e.read().decode("utf-8", "replace")
+                if e.code in (429, 500, 502, 503, 504, 529) and attempt < 3:    # busy: wait and retry
+                    time.sleep(self.retry_wait * (attempt + 1))
+                    continue
+                raise RuntimeError(f"LLM server returned HTTP {e.code}: {text[:400]}") from None
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"cannot reach LLM server at {self.base_url}: {e.reason}") from None
+
+    retry_wait = 5
+
+    def complete(self):
+        payload = {"model": self.model, "max_tokens": self.max_tokens, "system": self.system,
+                   "tools": self.tools, "messages": self.messages}
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        data = self._post(payload)
+        content = data.get("content") or []
+        calls, text = [], ""
+        for blk in content:
+            if blk.get("type") == "tool_use":
+                args = blk.get("input")
+                calls.append(Call(blk.get("id") or f"call{len(calls)}", blk.get("name", ""),
+                                  args if isinstance(args, dict) else {},
+                                  "" if isinstance(args, dict) else "tool input is not a JSON object"))
+            elif blk.get("type") == "text":
+                text += blk.get("text", "")
+        text = strip_think(text)
+        if not calls:
+            calls = parse_text_calls(text)      # a model that wrote the call as JSON text instead
+            for c in calls:
+                content.append({"type": "tool_use", "id": c.id, "name": c.name, "input": c.args})
+        # an empty assistant message is rejected on the next request
+        self.messages.append({"role": "assistant", "content": content or [{"type": "text", "text": "(no answer)"}]})
+        usage = data.get("usage") or {}
+        self.last_info = f"[stop_reason={data.get('stop_reason')} output_tokens={usage.get('output_tokens')}]"
+        if data.get("stop_reason") == "max_tokens":
+            self.last_info += " the answer was cut off: raise --max-tokens"
+        return Reply(text, calls)
+
+    def add_results(self, results):
+        self.messages.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": c.id, "content": s} for c, s in results]})
+
+    def add_user(self, text):
+        self.messages.append({"role": "user", "content": text})
+
+    def transcript(self):
+        return _plain(self.messages)
+
+
+def _sdk_available():
+    if os.path.isdir(_VENDOR) and _VENDOR not in sys.path:
+        sys.path.insert(0, _VENDOR)
+    try:
+        import anthropic  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 # ------------------------------------------------------------- OpenAI-compatible
@@ -302,7 +406,11 @@ class OpenAICompatBackend:
 def make_backend(kind=None, **cfg):
     kind = (kind or os.environ.get("STEPRECON_BACKEND", "anthropic")).lower()
     if kind in ("anthropic", "claude"):
-        return AnthropicBackend(**{k: v for k, v in cfg.items() if v is not None})
+        cfg = {k: v for k, v in cfg.items() if v is not None}
+        gateway = cfg.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if gateway or not _sdk_available():
+            return AnthropicHttpBackend(**cfg)
+        return AnthropicBackend(**cfg)
     if kind in ("openai", "local", "ollama", "lmstudio", "vllm"):
         return OpenAICompatBackend(**{k: v for k, v in cfg.items() if v is not None})
     raise ValueError(f"unknown backend {kind!r} (use anthropic or openai)")
