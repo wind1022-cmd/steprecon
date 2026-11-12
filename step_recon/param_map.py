@@ -63,7 +63,7 @@ def _features(doc, plist):
         # a balloon on every hole of a sketch, but only on two of the edges of a fillet / chamfer: the coloured
         # edges already show where it runs
         keep = 8 if sk is not None else 2
-        out.append({"n": n, "label": feat.Label, "type": feat.TypeId.split("::")[-1], "edges": edges,
+        out.append({"n": n, "name": feat.Name, "label": feat.Label, "type": feat.TypeId.split("::")[-1], "edges": edges,
                     "anchors": anchors[:keep], "count": len(anchors), "params": groups[name]["params"]})
     return out
 
