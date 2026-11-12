@@ -81,6 +81,8 @@ def collect(doc):
                 add(f"{label}.{prop}", q.Value if hasattr(q, "Value") else q,
                     "angle" if prop == "Angle" else "length", obj=o.Name, prop=prop)
         elif t == "Sketcher::SketchObject":
+            if o.Name in owner and owner[o.Name].Name in movers:
+                continue        # outline of a movable face's pocket: driven by the face parameter only
             label = _clean(owner[o.Name].Label) if o.Name in owner else _clean(o.Label)
             count = {}
             for i, c in enumerate(o.Constraints):

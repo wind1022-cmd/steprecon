@@ -228,7 +228,7 @@ td.bad{color:var(--bad);text-align:left;white-space:normal}
 "use strict";
 const $ = id => document.getElementById(id);
 const CAT = {hole:"구멍", fillet:"필렛", chamfer:"모따기", face:"두께·면", other:"기타"};
-const PNAME = {Diameter:"지름", DistanceX:"X 위치", DistanceY:"Y 위치", Distance:"거리", Radius:"반지름", Size:"크기", Length:"깊이", Depth:"깊이", Angle:"각도", Thickness:"두께", Offset:"이동량"};
+const PNAME = {Diameter:"지름", DistanceX:"X 위치", DistanceY:"Y 위치", Distance:"거리", Radius:"반지름", Size:"크기", Length:"깊이", Depth:"깊이", Angle:"각도", Thickness:"면까지 치수", Offset:"이동량"};
 let S = null, edits = {}, factors = [], filter = "all", sel = 0, hover = 0, running = false, rows = [], showEdges = true;
 
 const fmt = (v, d = 3) => Number(v).toLocaleString("en-US", {maximumFractionDigits: d});
@@ -245,7 +245,7 @@ function ftitle(f){
   if(f.category === "hole"){ const d = get("Diameter"); return "구멍" + (d ? " Ø" + fmt(d.base) : "") + (f.count > 1 ? " ×" + f.count : ""); }
   if(f.category === "fillet"){ const r = get("Radius"); return "필렛" + (r ? " R" + fmt(r.base) : "") + (f.count > 1 ? " ×" + f.count : ""); }
   if(f.category === "chamfer"){ const s = get("Size"); return "모따기" + (s ? " " + fmt(s.base) : "") + (f.count > 1 ? " ×" + f.count : ""); }
-  if(f.category === "face"){ const t = get("Thickness"); return (t ? "두께 " + fmt(t.base) : "면 이동") + (f.side ? " · " + f.side.replace("-", "−") + " 면" : ""); }
+  if(f.category === "face"){ const t = get("Thickness"); return (t ? (f.kind === "land" ? "가공면 " : "두께 ") + fmt(t.base) : "면 이동") + (f.side ? " · " + f.side.replace("-", "−") + " 면" : ""); }
   return f.label;
 }
 

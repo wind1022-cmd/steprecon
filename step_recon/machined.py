@@ -16,7 +16,8 @@ left in the blank untouched. So the result always equals the reference; only the
 
 Recognised: complete concave cylinders (through or blind, any direction, each step of a counterbore);
 constant-radius fillets (straight, around circular edges, with their corner patches); equal-leg chamfers;
-flat faces whose surroundings run straight along their normal, as movable faces (thickness, height).
+flat faces as movable faces (thickness, height): those with straight surroundings, and machined lands
+bounded by chamfers, fillets or drafted walls that fall away from them.
 Left in the blank: everything else (drill points, slots, threads, variable fillets, freeform shapes, drafts)."""
 import math
 
@@ -298,8 +299,8 @@ def _dress(sess, report):
 
 
 def _thickness(shape, face, normal):
-    """How much material lies straight behind a planar face: probed at several points, the value met most often
-    wins (under a chamfer or beside a boss the depth differs locally). 0 if unknown."""
+    """Size of the part straight behind a planar face (plate thickness, boss height, overall width): probed at
+    several points, the value met most often wins (under a boss or a chamfer it differs locally). 0 if unknown."""
     try:
         verts, tris = face.tessellate(max(shape.BoundBox.DiagonalLength * 0.01, 1e-3))
         reach = shape.BoundBox.DiagonalLength * 1.1
@@ -308,11 +309,14 @@ def _thickness(shape, face, normal):
         for a, b, c in tris[::step][:24]:
             p = (verts[a] + verts[b] + verts[c]) * (1.0 / 3.0)
             line = Part.makeLine(p - normal * 1e-4, p - normal * reach)
+            # distance to where the probe leaves the part for the last time: the size of the part behind the
+            # face, not interrupted by holes or pockets on the way
+            far = 0.0
             for e in line.common(shape).Edges:
-                ends = [e.valueAt(e.FirstParameter), e.valueAt(e.LastParameter)]
-                if min(v.distanceToPoint(p) for v in ends) < 1e-3:      # the stretch that starts at the face
-                    found.append(round(e.Length + 1e-4, 3))
-                    break
+                for v in (e.valueAt(e.FirstParameter), e.valueAt(e.LastParameter)):
+                    far = max(far, v.distanceToPoint(p))
+            if far > 1e-3:
+                found.append(round(far, 3))
         if not found:
             return 0.0
         counts = {}
@@ -324,71 +328,174 @@ def _thickness(shape, face, normal):
         return 0.0
 
 
-def add_face_moves(sess, report, limit=12):
-    """Make the position of flat faces a parameter (plate thickness, boss height, depth of a seat ...).
+def _edges_to_geometry(edges, loc):
+    """Line / arc / circle edges -> sketch geometry items, `loc` mapping a 3D point to sketch (x, y)."""
+    geo = []
+    for e in edges:
+        c = e.Curve
+        t = type(c).__name__
+        a, b = e.FirstParameter, e.LastParameter
+        if t in ("Line", "LineSegment"):
+            geo.append({"type": "line", "p1": loc(e.valueAt(a)), "p2": loc(e.valueAt(b))})
+        elif t == "Circle":
+            cen = loc(c.Center)
+            if e.isClosed() or abs(abs(b - a) - TWO_PI) < 1e-9:
+                geo.append({"type": "circle", "c": cen, "r": c.Radius})
+                continue
 
-    A face qualifies if everything around it runs straight along its normal - planes square to it, cylinders
-    parallel to its normal - so pushing or pulling it simply lengthens or shortens those neighbours. Each such
-    face gets a Pad (push out) and a Pocket (push in) taken directly from the face, both switched off until the
-    parameter asks for a move; because the profile is the face itself, they follow changes made further up
-    (hole sizes, fillets). The largest `limit` faces are offered."""
+            def ang(q):
+                return math.degrees(math.atan2(q[1] - cen[1], q[0] - cen[0])) % 360.0
+
+            s0, m, s1 = ang(loc(e.valueAt(a))), ang(loc(e.valueAt((a + b) / 2))), ang(loc(e.valueAt(b)))
+            a0, a1 = (s0, s1) if (m - s0) % 360.0 <= (s1 - s0) % 360.0 else (s1, s0)
+            if a1 <= a0:
+                a1 += 360.0
+            geo.append({"type": "arc", "c": cen, "r": c.Radius, "a0": a0, "a1": a1})
+        else:
+            raise ValueError("outline with a " + t)
+    return geo
+
+
+def _surroundings(shape, nb, i, n):
+    """How the faces around planar face i behave, seen from that face:
+    "straight" - all of them run along the normal (planes square to it, cylinders parallel to it);
+    "land"     - none rises above the face (chamfers, fillets, drafted or stepped walls falling away from it);
+    None       - something rises above it without being straight: the face cannot simply be moved.
+    For a land also the widest in-plane reach of the non-straight neighbours (how far a deeper cut must extend)."""
+    f = shape.Faces[i]
+    p0 = f.CenterOfMass
+    straight, land, reach = True, True, 0.0
+    for _, j in nb[i]:
+        g = shape.Faces[j]
+        gs = g.Surface
+        kind = type(gs).__name__
+        if kind == "Plane":
+            ok = abs(App.Vector(gs.Axis).normalize().dot(n)) < 1e-6
+        elif kind == "Cylinder":
+            ok = App.Vector(gs.Axis).cross(n).Length < 1e-6
+        else:
+            ok = False
+        if ok:
+            continue
+        straight = False
+        pts = [v.Point for v in g.Vertexes] + [g.CenterOfMass]
+        if any((q - p0).dot(n) > 1e-6 for q in pts):
+            land = False
+            break
+        for q in pts:
+            flat = q - n * (q - p0).dot(n)
+            try:
+                reach = max(reach, f.distToShape(Part.Vertex(flat))[0])
+            except Exception:
+                pass
+    if straight:
+        return "straight", 0.0
+    return ("land", reach) if land else (None, 0.0)
+
+
+def add_face_moves(sess, report, limit=12):
+    """Make the position of flat faces a parameter (plate thickness, boss height, height of a machined land ...).
+
+    Each movable face gets one feature for moving out and one for moving in, both switched off until its parameter
+    asks for a move; they sit at the end of the tree so nothing depends on them.
+      out: a Pad taken from the face itself (it follows upstream changes such as hole sizes);
+      in : for a face with straight surroundings a Pocket taken from the face;
+           for a land (bounded by chamfers, fillets or drafted walls that fall away) a Pocket whose outline reaches
+           past the face by the width of those neighbours, so that milling the land lower also takes their upper
+           part away instead of leaving a rim.
+    Every pair is tried out and in when created and dropped if the volume does not change as expected.
+    The largest `limit` faces are offered."""
     body = sess.body
     anchor = body.Tip
     if anchor is None:
         return
     shape = anchor.Shape
     nb = _neighbours(shape)
+
+    def plane_key(f):
+        a = _canon(App.Vector(f.Surface.Axis).normalize())
+        return (round(a.x, 4), round(a.y, 4), round(a.z, 4), round(a.dot(f.Surface.Position), 3))
+
+    # planes that exist before the fillets and chamfers: a chamfer's own faces are not faces to move
+    plain = [o for o in body.Group if o.isDerivedFrom("PartDesign::Feature")
+             and o.TypeId not in ("PartDesign::Fillet", "PartDesign::Chamfer")]
+    real = {plane_key(f) for f in plain[-1].Shape.Faces if type(f.Surface).__name__ == "Plane"} if plain else None
     cands = []
     for i, f in enumerate(shape.Faces):
         if type(f.Surface).__name__ != "Plane" or not nb[i]:
             continue
+        if real is not None and plane_key(f) not in real:
+            continue
         u0, u1, v0, v1 = f.ParameterRange
         n = f.normalAt((u0 + u1) / 2, (v0 + v1) / 2)
-        ok = True
-        for _, j in nb[i]:
-            gs = shape.Faces[j].Surface
-            kind = type(gs).__name__
-            if kind == "Plane":
-                ok = abs(App.Vector(gs.Axis).normalize().dot(n)) < 1e-6
-            elif kind == "Cylinder":
-                ok = App.Vector(gs.Axis).cross(n).Length < 1e-6
-            else:
-                ok = False
-            if not ok:
-                break
-        if ok:
-            cands.append((f.Area, i, n))
+        kind, reach = _surroundings(shape, nb, i, n)
+        if kind:
+            cands.append((f.Area, i, n, kind, reach))
     cands.sort(key=lambda c: -c[0])
     made = 0
-    for area, i, n in cands[:limit]:
+    for area, i, n, kind, reach in cands[:limit]:
         name = f"Face{i + 1}"
-        thick = _thickness(shape, shape.Faces[i], n)
+        face = shape.Faces[i]
+        thick = _thickness(shape, face, n)
         test = min(1.0, 0.25 * thick) if thick > 0 else 1.0
         before = body.Tip.Shape.Volume
-        pad = body.newObject("PartDesign::Pad", "FaceMove")
-        pad.Profile = (anchor, [name])
-        pad.Length = test
-        cut = body.newObject("PartDesign::Pocket", "FaceMoveIn")
-        cut.Profile = (anchor, [name])
-        cut.Length = test
+        tip_before = body.Tip
+        made_objs = []
         good = False
         try:
-            cut.Suppressed = True
+            pad = body.newObject("PartDesign::Pad", "FaceMove")
+            made_objs.append(pad.Name)
+            pad.Profile = (anchor, [name])
+            pad.Length = test
             sess.doc.recompute()
             grew = pad.isValid() and abs((pad.Shape.Volume - before) - area * test) <= 2e-3 * area * test
-            pad.Suppressed, cut.Suppressed = True, False
+            pad.Suppressed = True
             sess.doc.recompute()
-            shrank = cut.isValid() and abs((before - cut.Shape.Volume) - area * test) <= 2e-3 * area * test
+            if kind == "straight":
+                cut = body.newObject("PartDesign::Pocket", "FaceMoveIn")
+                made_objs.append(cut.Name)
+                cut.Profile = (anchor, [name])
+                cut.Length = test
+                lo, hi = 0.998, 1.002
+            else:
+                # outline of the land, widened by the reach of its neighbours (at most half the land's width)
+                bb = face.BoundBox
+                margin = min(reach * 1.05 + 1e-3, 0.5 * min(d for d in (bb.XLength, bb.YLength, bb.ZLength) if d > 1e-6))
+                outer = face.OuterWire
+                try:
+                    wide = outer.makeOffset2D(margin)
+                    edges = wide.Edges
+                except Exception:
+                    edges = outer.Edges
+                c0 = face.CenterOfMass
+                plane = {"origin": [c0.x, c0.y, c0.z], "normal": [n.x, n.y, n.z]}
+                o, x, y, _ = sess._frame(plane)
+                plane["x_dir"] = [x.x, x.y, x.z]
+                geo = _edges_to_geometry(edges, lambda q: [(q - o).dot(x), (q - o).dot(y)])
+                sk = sess._make_sketch(plane, 0, geo)
+                made_objs.append(sk.Name)
+                cut = body.newObject("PartDesign::Pocket", "FaceMoveIn")
+                made_objs.append(cut.Name)
+                cut.Profile = sk
+                cut.Length = test
+                lo, hi = 0.8, 3.0       # the neighbours' upper part goes too
+            sess.doc.recompute()
+            if cut.isValid() and abs(cut.Shape.Volume - before) < 1e-9 * before:
+                cut.Reversed = not cut.Reversed
+                sess.doc.recompute()
+            took = (before - cut.Shape.Volume) / (area * test) if cut.isValid() else 0.0
             cut.Suppressed = True
             sess.doc.recompute()
-            good = grew and shrank and abs(body.Tip.Shape.Volume - before) <= 1e-9 * max(before, 1.0)
+            good = grew and lo <= took <= hi and abs(body.Tip.Shape.Volume - before) <= 1e-9 * max(before, 1.0)
         except Exception:
             good = False
         if not good:
-            for o in (cut, pad):
-                sess.doc.removeObject(o.Name)
-            feats = [o for o in body.Group if o.isDerivedFrom("PartDesign::Feature")]
-            body.Tip = feats[-1]
+            for nm in reversed(made_objs):
+                try:
+                    sess.doc.removeObject(nm)
+                except Exception:
+                    pass
+            body.Tip = tip_before
             sess.doc.recompute()
             continue
         made += 1
@@ -396,8 +503,9 @@ def add_face_moves(sess, report, limit=12):
         cut.Label = f"Face_{made}_in"
         pad.addProperty("App::PropertyString", "SR_Pair", "steprecon", "pocket that moves this face inward")
         pad.addProperty("App::PropertyFloat", "SR_Thickness", "steprecon", "material behind the face at the start")
-        pad.SR_Pair, pad.SR_Thickness = cut.Name, float(thick)
-        sess._record([cut.Name, pad.Name], f"movable face {made} (thickness {thick:g})")
+        pad.addProperty("App::PropertyString", "SR_Kind", "steprecon", "straight surroundings, or a land")
+        pad.SR_Pair, pad.SR_Thickness, pad.SR_Kind = cut.Name, float(thick), kind
+        sess._record(list(reversed(made_objs)), f"movable face {made} ({kind}, thickness {thick:g})")
     report["faces_made"] = made
     report["features"] += made
 

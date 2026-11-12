@@ -83,9 +83,35 @@ report("hole positions are parameters too", any(n.startswith("Hole_D5_x2.Distanc
 
 # movable faces: the plate's underside (thickness 10) and the top of the boss (height 22)
 thick = sorted((p["value"], p["name"]) for p in plist if p["name"].endswith(".Thickness"))
-report("flat faces with straight surroundings become thickness parameters", [round(v, 3) for v, _ in thick] == [10.0, 22.0]
-       and rep.get("faces_made") == 2, str(thick))
+report("flat faces become movable: underside 10, boss top 22, the four sides 30 / 40; chamfer faces are not offered",
+       [round(v, 3) for v, _ in thick] == [10.0, 22.0, 30.0, 30.0, 40.0, 40.0] and rep.get("faces_made") == 6, str(thick))
 plate_t, boss_h = thick[0][1], thick[1][1]
+doc = App.openDocument(model)
+kinds = {o.Label: o.SR_Kind for o in doc.Objects if hasattr(o, "SR_Kind")}
+normals = {}
+for o in doc.Objects:
+    if hasattr(o, "SR_Kind"):
+        fc = o.Profile[0].Shape.getElement(o.Profile[1][0])
+        nv = fc.normalAt(*fc.Surface.parameter(fc.CenterOfMass))
+        normals[o.Label] = (round(nv.x), round(nv.y), round(nv.z))
+App.closeDocument(doc.Name)
+report("sides bounded by fillets and the chamfer are lands, underside and boss top have straight surroundings",
+       sorted(kinds.values()) == ["land"] * 4 + ["straight"] * 2, str(kinds))
+side = next(lbl for lbl, nv in normals.items() if nv == (0, -1, 0))       # the y = 0 side, which carries the chamfer
+rows_s = doe.run(model, [{side + ".Thickness": 30}, {side + ".Thickness": 27}, {side + ".Thickness": 33}],
+                 os.path.join(tmp, "doe_side"), verbose=False)
+report("moving a land in and out changes the part size by exactly that much",
+       [r["ok"] for r in rows_s] == [True] * 3 and [r["size_y"] for r in rows_s] == [30.0, 27.0, 33.0]
+       and rows_s[1]["volume"] < rows_s[0]["volume"] < rows_s[2]["volume"],
+       str([(r["size_y"], r["volume"]) for r in rows_s]))
+cut_shape = analyze.load_shape(os.path.join(tmp, "doe_side", rows_s[1]["file"]))
+slab = Part.makeBox(60, 3, 40, V(-10, 0, -10))
+report("milling a land lower leaves nothing above the new plane (no rim from the old fillets and chamfer)",
+       cut_shape.isValid() and cut_shape.common(slab).Volume < 1e-6 and len(cut_shape.Solids) == 1,
+       f"left in the removed zone: {cut_shape.common(slab).Volume:.6f}")
+names_now = [p["name"] for p in plist]
+report("helper outlines of the lands are not offered as parameters",
+       not any("_in." in n for n in names_now) and len(names_now) == 13 + 6, f"{len(names_now)} parameters")
 rows_t = doe.run(model, [{plate_t: 10}, {plate_t: 12}, {plate_t: 7}, {boss_h: 30, bore: 10}, {plate_t: 0}],
                  os.path.join(tmp, "doe_thick"), verbose=False)
 area_bottom = 40 * 30 - (4 - math.pi) * 9 - math.pi * 16 - 2 * math.pi * 6.25

@@ -211,7 +211,11 @@ class Studio:
                         side = ("+" if nrm[k] > 0 else "-") + "XYZ"[k]
                 except Exception:
                     pass
+            kind = ""
+            if cat == "face":
+                kind = str(getattr(self.doc.getObject(f["name"]), "SR_Kind", ""))
             feats.append({"n": f["n"], "label": f["label"], "type": f["type"], "category": cat, "side": side,
+                          "kind": kind,
                           "color": PALETTE[cat], "count": f.get("count", 1),
                           "position": None if a is None else [round(a.x, 3), round(a.y, 3), round(a.z, 3)],
                           "params": [{"name": p["name"], "short": p["name"].split(".", 1)[-1],
