@@ -3,6 +3,7 @@
 The model is pluggable (see llm.py): Claude API or any OpenAI-compatible server (Ollama, LM Studio, vLLM...)."""
 import json
 import os
+import time
 
 from . import analyze, fc_tools, llm
 
@@ -65,6 +66,7 @@ SYSTEM_BASIC = SYSTEM[:SYSTEM.index("Rotational parts:")] + SYSTEM[SYSTEM.index(
 BASIC_TOOLS = ("pad", "pocket", "hole", "fillet", "chamfer", "list_edges", "compare", "undo", "finish")
 PROFILES = {"full": None, "basic": BASIC_TOOLS}
 # tools that do not change the shape (no progress report is attached to their results)
+STATE_BUDGET_S = 30     # see state() in run()
 READ_ONLY = ("compare", "list_edges", "list_faces", "features", "select_body", "new_body", "finish")
 
 PLANE = {"description": "XY / XZ / YZ, or an object {origin:[x,y,z], normal:[x,y,z], x_dir:[x,y,z]} "
@@ -266,15 +268,31 @@ def run(step_path, out_dir, max_turns=40, client=None, backend=None, profile="fu
     nudges = 0
     finish_refused = False
 
+    slow = []
+
     def state():
+        # comparing after every step is cheap on ordinary parts but can take minutes on huge freeform ones;
+        # after one slow comparison stop doing it automatically (the model can still call compare)
+        if slow:
+            return None
+        t0 = time.time()
         try:
             return sess.state()
         except Exception:
             return None
+        finally:
+            if time.time() - t0 > STATE_BUDGET_S:
+                slow.append(1)
+                if verbose:
+                    print(f"(comparison took {time.time() - t0:.0f}s; automatic state reports are off for this part)")
 
     for turn in range(max_turns):
+        t_model = time.time()
         reply = backend.complete()
+        t_model = time.time() - t_model
         result["turns"] = turn + 1
+        if verbose and t_model > 60:
+            print(f"[{turn}] (model answered after {t_model:.0f}s)")
         if not reply.calls:
             # small models sometimes answer in prose or with nothing at all; nudge them back to the protocol
             # (up to 3 times in a row) before giving up
