@@ -3,20 +3,23 @@
     open STEP -> blank + features (machined.build) -> parameters -> edit / design-of-experiments -> STEP per variant
 
 The page (studio.html) is served from here too. Only this computer can reach the server (127.0.0.1); nothing is
-sent anywhere else. FreeCAD is not thread-safe, so requests are handled one after the other."""
+sent anywhere else. FreeCAD is not thread-safe: every request that touches the model is run by one worker thread,
+one after the other, while small questions (progress, CPU setting) are answered at once."""
 import csv
 import json
 import math
 import os
+import queue
 import re
+import threading
 import time
 import zipfile
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import FreeCAD as App
 
-from . import analyze, machined, param_map, params as P
+from . import analyze, cpu, machined, param_map, params as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PALETTE = {"hole": "#3b82f6", "fillet": "#10b981", "chamfer": "#f59e0b", "face": "#a855f7", "other": "#64748b"}
@@ -68,6 +71,34 @@ def _face_key(f):
     return (kind, round(f.Area, 3), _r(c))
 
 
+class Worker:
+    """The one thread that touches FreeCAD documents. call() runs a function there and hands back its result."""
+
+    def __init__(self):
+        self.jobs = queue.Queue()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        while True:
+            fn, a, k, box, done = self.jobs.get()
+            try:
+                box["value"] = fn(*a, **k)
+            except BaseException as e:      # handed to the caller
+                box["error"] = e
+            done.set()
+
+    def call(self, fn, *a, **k):
+        if threading.current_thread() is self.thread:
+            return fn(*a, **k)
+        box, done = {}, threading.Event()
+        self.jobs.put((fn, a, k, box, done))
+        done.wait()
+        if "error" in box:
+            raise box["error"]
+        return box["value"]
+
+
 class Studio:
     def __init__(self, workspace):
         self.workspace = workspace
@@ -76,23 +107,71 @@ class Studio:
         self.info = None
         self.run_dir = None
         self.rows = []
+        self.worker = Worker()
+        self.progress = {"active": False}     # how far the running analysis is (open)
+
+    # ------------------------------------------------------------ settings (CPU), progress
+    def load_settings(self):
+        try:
+            with open(os.path.join(self.workspace, "settings.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def save_settings(self, **values):
+        data = self.load_settings()
+        data.update(values)
+        try:
+            with open(os.path.join(self.workspace, "settings.json"), "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=1)
+        except OSError:
+            pass
+
+    def set_cpu(self, cores=None, low=None):
+        """Cores the engine may use and low priority; applies at once, also to an analysis that is running."""
+        st = cpu.apply(cores, low)
+        self.save_settings(cpu_cores=st["cores"], cpu_low=st["low"])
+        return st
+
+    def _step(self, pct, text):
+        self.progress.update(pct=round(max(self.progress.get("pct", 0.0), pct), 1), text=text)
+
+    def progress_public(self):
+        p = dict(self.progress)
+        if p.get("active"):
+            p["elapsed"] = round(time.time() - p.pop("started"), 1)
+        return p
 
     # ------------------------------------------------------------ model
     def open(self, path, name=None):
         """Read a STEP/IGES file and turn it into blank + features."""
+        self.progress = {"active": True, "pct": 0.0, "text": "준비 중", "started": time.time(),
+                         "name": name or os.path.basename(path)}
+        try:
+            return self._open(path, name)
+        finally:
+            self.progress = {"active": False}
+
+    def _open(self, path, name):
         t0 = time.time()
         self.close()
         name = name or os.path.basename(path)
         base = re.sub(r"[^A-Za-z0-9_.-]+", "_", os.path.splitext(name)[0]) or "part"
         self.dir = os.path.join(self.workspace, base + time.strftime("_%Y%m%d_%H%M%S"))
         os.makedirs(self.dir, exist_ok=True)
+        self._step(1, "STEP 파일 읽는 중")
         ref = analyze.load_shape(path)
-        sess, report = machined.build(ref)
+        self._step(5, f"형상 읽음: 면 {len(ref.Faces)}개")
+        sess, report = machined.build(ref, lambda f, stage, info: self._step(5 + 80 * f, machined.describe(stage, info)))
         fcstd = os.path.join(self.dir, base + ".FCStd")
+        self._step(86, "모델 저장 중 (스케치에 치수 넣는 중)")
         saved = sess.save(fcstd)
+        self._step(93, "원본과 비교하는 중")
         cmp_ = sess.compare()
         self.doc, self.base, self.fcstd = sess.doc, base, fcstd
         self.ref_volume = ref.Volume
+        self._step(95, "바꿀 수 있는 치수 정리 중")
         self._collect()
         self.info = {"name": name, "base": base, "folder": self.dir, "seconds": round(time.time() - t0, 1),
                      "identical": bool(cmp_.get("converged")), "xor_pct": cmp_.get("xor_pct"),
@@ -100,6 +179,7 @@ class Studio:
                      "counts": {"holes": report["holes_made"], "fillets": report["fillets_made"],
                                 "chamfers": report["chamfers_made"], "faces": report.get("faces_made", 0)},
                      "sketches": saved.get("sketches", {})}
+        self._step(97, "3D 화면 데이터 만드는 중")
         return self.state(mesh=True)
 
     def close(self):
@@ -299,6 +379,9 @@ class Studio:
 
 
 def make_handler(studio):
+    def W(fn, *a, **k):
+        return studio.worker.call(fn, *a, **k)
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -339,10 +422,16 @@ def make_handler(studio):
                 if url.path in ("/", "/index.html"):
                     with open(os.path.join(HERE, "studio.html"), "rb") as f:
                         return self._send(200, f.read(), "text/html; charset=utf-8")
+                if url.path == "/api/progress":
+                    return self._send(200, studio.progress_public())
+                if url.path == "/api/cpu":
+                    return self._send(200, cpu.state())
                 if url.path == "/api/state":
-                    return self._send(200, studio.state(mesh=True))
+                    if studio.progress.get("active"):       # do not wait minutes for the analysis to end
+                        return self._send(200, {"loaded": False, "analysing": True, "rev": getattr(studio, "rev", 0)})
+                    return self._send(200, W(studio.state, mesh=True))
                 if url.path == "/api/mesh":
-                    return self._send(200, studio.mesh())
+                    return self._send(200, W(studio.mesh))
                 if url.path == "/api/file":
                     name = os.path.basename(parse_qs(url.query).get("name", [""])[0])
                     for folder in (studio.run_dir, getattr(studio, "dir", None)):
@@ -381,21 +470,28 @@ def make_handler(studio):
                         path = os.path.join(up, "upload" + ext)
                         with open(path, "wb") as f:
                             f.write(data)
-                    return self._send(200, studio.open(path, name))
+                    return self._send(200, W(studio.open, path, name))
+                if url.path == "/api/cpu":
+                    b = self._json()
+                    try:
+                        cores = None if b.get("cores") is None else int(b["cores"])
+                    except (TypeError, ValueError):
+                        return self._send(400, {"error": "cores must be a number"})
+                    low = None if b.get("low") is None else bool(b["low"])
+                    return self._send(200, studio.set_cpu(cores, low))
                 if url.path == "/api/set":
                     body = self._json()
-                    bad = studio.set_values(body.get("values", {}))
-                    st = studio.state(mesh=not bad)
-                    return self._send(200, st)
+                    bad = W(studio.set_values, body.get("values", {}))
+                    return self._send(200, W(studio.state, mesh=not bad))
                 if url.path == "/api/doe/start":
-                    return self._send(200, studio.doe_start(self._json().get("names", [])))
+                    return self._send(200, W(studio.doe_start, self._json().get("names", [])))
                 if url.path == "/api/doe/variant":
                     b = self._json()
-                    return self._send(200, studio.doe_variant(int(b["index"]), b.get("values", {})))
+                    return self._send(200, W(studio.doe_variant, int(b["index"]), b.get("values", {})))
                 if url.path == "/api/doe/finish":
                     self._body()
-                    out = studio.doe_finish()
-                    out["state"] = studio.state(mesh=True)
+                    out = W(studio.doe_finish)
+                    out["state"] = W(studio.state, mesh=True)
                     return self._send(200, out)
                 if url.path == "/api/reveal":
                     self._body()
@@ -413,5 +509,6 @@ def make_handler(studio):
 def serve(workspace, port=0):
     """Returns (server, studio); call server.serve_forever()."""
     studio = Studio(workspace)
-    server = HTTPServer(("127.0.0.1", port), make_handler(studio))
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(studio))
+    server.daemon_threads = True
     return server, studio

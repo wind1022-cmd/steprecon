@@ -1,0 +1,7 @@
+# STEP Studio needs no pip packages: it runs on the Python that comes with FreeCAD and uses only the standard
+# library, so `pip install -r requirements.txt` installs nothing.
+#
+# Needed:
+#   FreeCAD 1.x (tested with 1.1)       https://www.freecad.org  or  winget install --id FreeCAD.FreeCAD -e
+#   Microsoft Edge or Google Chrome     any browser with WebGL2 shows the window; Windows has Edge already
+#   Windows 10/11                       tested there; fc.sh runs it on Linux/macOS with FreeCAD, untested
