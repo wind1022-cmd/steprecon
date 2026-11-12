@@ -23,6 +23,14 @@ Conventions (global coordinates in mm):
   Profiles must be closed; use only dimensions that are plausible design values (snap to 0.5 mm etc).
 - Edge indices for fillet/chamfer come from list_edges (1-based) of the CURRENT tip; they change after every feature.
 
+- Outlines from the reference (PREFERRED for any outline that is not a plain rectangle or circle - do not retype
+  coordinates): every Plane face lists "outline" (edge kinds of its outer boundary), "holes" (number of inner loops)
+  and "max_depth" (how much of the part lies behind it). pad with face=<id> and length extrudes the exact outer
+  outline of that reference face into the material; holes=true keeps the face's inner loops as openings. pocket with
+  face=<id> cuts the inner loops of that face into the material (loops="inner", default), or with loops="outer" removes
+  the face's own outline outward (use the floor face of a recess with its depth). No plane/geometry is needed then.
+  Typical plate or flange: pad face=<largest Plane face> length=<thickness>, then pockets, holes, chamfers.
+
 Rotational parts: if cylinders/cones share one axis, build a revolved profile (revolution) instead of stacked pads.
 Repeated holes/pockets at regular spacing or on a circle -> build ONE and use linear_pattern / polar_pattern;
 symmetric features about a global plane -> mirror. Patterns/mirror reference features by index (see features tool;
@@ -171,21 +179,26 @@ TOOLS = [
     {"name": "features", "description": "List the feature tree built so far with indices (for patterns/mirror); with "
      "several bodies it also shows which body each feature is in and which body is active.",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "pad", "description": "Sketch a closed profile on a base plane and extrude it (adds material).",
+    {"name": "pad", "description": "Extrude a closed profile (adds material). Either face=<id of a Plane face of the "
+     "reference> to reuse its exact outline (extruded into the material), or plane + geometry to draw it.",
      "input_schema": {"type": "object", "properties": {
+         "face": {"type": "integer", "description": "reference Plane face id whose outline is the profile"},
+         "holes": {"type": "boolean", "description": "with face: also keep the face's inner loops as openings"},
          "plane": PLANE,
          "offset": {"type": "number", "description": "plane offset along its normal"},
          "geometry": {"type": "array", "items": {"type": "object"}},
          "length": {"type": "number"},
          "reversed": {"type": "boolean"}, "midplane": {"type": "boolean"}},
-         "required": ["plane", "geometry", "length"]}},
-    {"name": "pocket", "description": "Sketch a closed profile and cut it into the solid.",
+         "required": ["length"]}},
+    {"name": "pocket", "description": "Cut a closed profile into the solid. Either face=<id of a Plane face of the "
+     "reference> (its inner loops, or with loops=outer its own outline cut outward), or plane + geometry.",
      "input_schema": {"type": "object", "properties": {
+         "face": {"type": "integer", "description": "reference Plane face id"},
+         "loops": {"type": "string", "enum": ["inner", "outer", "all"]},
          "plane": PLANE,
          "offset": {"type": "number"},
          "geometry": {"type": "array", "items": {"type": "object"}},
-         "depth": {"type": "number"}, "through_all": {"type": "boolean"}, "reversed": {"type": "boolean"}},
-         "required": ["plane", "geometry"]}},
+         "depth": {"type": "number"}, "through_all": {"type": "boolean"}, "reversed": {"type": "boolean"}}}},
     {"name": "hole", "description": "Round hole at sketch position (x,y); give depth or through_all. Optional: "
      "positions for several equal holes in one feature, a counterbore (diameter + depth) or countersink (diameter + "
      "angle) at the entry, drill_angle for a conical bottom (depth is then the cylindrical part).",
@@ -227,7 +240,9 @@ def _compact_summary(a, max_faces=80):
     """Drop adjacency and trim face list so the prompt stays small."""
     s = {k: v for k, v in a.items() if k not in ("adjacency", "faces")}
     faces = a["faces"]
-    s["faces"] = faces[:max_faces]
+    # when the list must be cut, keep the largest faces (they carry the main outlines), still listed by id
+    keep = sorted(sorted(faces, key=lambda f: -f.get("area", 0))[:max_faces], key=lambda f: f["id"])
+    s["faces"] = keep
     if len(faces) > max_faces:
         s["faces_truncated"] = len(faces) - max_faces
     return s

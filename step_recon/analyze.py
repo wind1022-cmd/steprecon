@@ -155,6 +155,20 @@ def face_info(idx, f):
         n = f.normalAt(u, v)
         d["normal"] = _vec(n)
         d["offset"] = _r(n.dot(pt))
+        # what a designer would sketch: the boundary of the face (usable directly via pad/pocket face=<id>)
+        try:
+            outer = f.OuterWire
+            kinds = {}
+            for e in outer.Edges:
+                k = type(e.Curve).__name__
+                k = {"Line": "lines", "LineSegment": "lines", "Circle": "arcs"}.get(k, "other")
+                if k == "arcs" and e.isClosed():
+                    k = "circles"
+                kinds[k] = kinds.get(k, 0) + 1
+            d["outline"] = kinds
+            d["holes"] = len([w for w in f.Wires if not w.isSame(outer)])
+        except Exception:
+            pass
     elif t == "Cylinder":
         d["radius"] = _r(s.Radius)
         d["axis"] = _vec(s.Axis)
@@ -209,6 +223,11 @@ def analyze(path, with_adjacency=True):
                     "bbox_min": [_r(min(f["bbox"][i] for f in free)) for i in range(3)],
                     "bbox_max": [_r(max(f["bbox"][i + 3] for f in free)) for i in range(3)],
                     "clusters": freeform_clusters(shape)}
+    corners = [(x, y, z) for x in (bb.XMin, bb.XMax) for y in (bb.YMin, bb.YMax) for z in (bb.ZMin, bb.ZMax)]
+    for f in faces:
+        if f["type"] == "Plane":    # how much of the part lies behind the face (upper bound for a pad from it)
+            n = f["normal"]
+            f["max_depth"] = _r(f["offset"] - min(n[0] * c[0] + n[1] * c[1] + n[2] * c[2] for c in corners))
     solids, owner = solid_table(shape)
     for i, si in owner.items():
         faces[i]["solid"] = si

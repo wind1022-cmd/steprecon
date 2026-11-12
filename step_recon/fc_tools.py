@@ -164,20 +164,81 @@ class Session:
             raise
         return made
 
+    @staticmethod
+    def _frame(plane):
+        """Origin and axes (o, x, y, z) of an arbitrary sketch plane
+        {"origin":[x,y,z], "normal":[..], "x_dir":[..]} given in global coordinates."""
+        z = App.Vector(*plane["normal"]).normalize()
+        xd = App.Vector(*plane.get("x_dir", [1, 0, 0]))
+        x = (xd - z * xd.dot(z))
+        if x.Length < 1e-9:
+            x = z.cross(App.Vector(0, 0, 1)) if abs(z.z) < 0.9 else App.Vector(1, 0, 0)
+        x.normalize()
+        return App.Vector(*plane["origin"]), x, z.cross(x), z
+
+    def _face_profile(self, face, loops="outer", into_material=True):
+        """Sketch plane + geometry reproducing the boundary of a planar face of the REFERENCE.
+        loops: outer | inner | all. The sketch normal points into the material (into_material) or out of it."""
+        from . import analyze
+        faces = self.ref.Faces
+        idx = int(face)
+        if not 0 <= idx < len(faces):
+            raise ValueError(f"face {idx} out of range (0..{len(faces) - 1})")
+        f = faces[idx]
+        kind = type(f.Surface).__name__
+        if kind != "Plane":
+            raise ValueError(f"face {idx} is a {kind}; only Plane faces have a flat outline")
+        if loops not in ("outer", "inner", "all"):
+            raise ValueError("loops must be outer, inner or all")
+        pt, u, v = analyze._face_point(f)
+        n = f.normalAt(u, v)
+        z = n * (-1.0 if into_material else 1.0)
+        plane = {"origin": [pt.x, pt.y, pt.z], "normal": [z.x, z.y, z.z]}
+        o, x, y, _ = self._frame(plane)
+        plane["x_dir"] = [x.x, x.y, x.z]
+
+        def loc(p):
+            d = p - o
+            return [d.dot(x), d.dot(y)]
+
+        outer = f.OuterWire
+        inner = [w for w in f.Wires if not w.isSame(outer)]
+        wires = {"outer": [outer], "inner": inner, "all": [outer] + inner}[loops]
+        if not wires:
+            raise ValueError(f"face {idx} has no inner loops (holes); use loops=outer")
+        geo = []
+        for w in wires:
+            for e in w.Edges:
+                c = e.Curve
+                t = type(c).__name__
+                a, b = e.FirstParameter, e.LastParameter
+                if t in ("Line", "LineSegment"):
+                    geo.append({"type": "line", "p1": loc(e.valueAt(a)), "p2": loc(e.valueAt(b))})
+                elif t == "Circle":
+                    cen = loc(c.Center)
+                    if e.isClosed() or abs(abs(b - a) - 2 * math.pi) < 1e-9:
+                        geo.append({"type": "circle", "c": cen, "r": c.Radius})
+                        continue
+
+                    def ang(p):
+                        return math.degrees(math.atan2(p[1] - cen[1], p[0] - cen[0])) % 360.0
+
+                    s, m, en = ang(loc(e.valueAt(a))), ang(loc(e.valueAt((a + b) / 2))), ang(loc(e.valueAt(b)))
+                    a0, a1 = (s, en) if (m - s) % 360.0 <= (en - s) % 360.0 else (en, s)    # counter-clockwise
+                    if a1 <= a0:
+                        a1 += 360.0
+                    geo.append({"type": "arc", "c": cen, "r": c.Radius, "a0": a0, "a1": a1})
+                else:
+                    raise ValueError(f"the outline of face {idx} contains a {t} edge, which sketches here cannot "
+                                     f"reproduce; draw the profile with plane + geometry instead")
+        return plane, geo
+
     def _build_sketch(self, plane, offset, geometry):
         sk = self.body.newObject("Sketcher::SketchObject", "Sketch")
         sk.MapMode = "FlatFace"
         if isinstance(plane, dict):
-            # arbitrary plane: {"origin":[x,y,z], "normal":[..], "x_dir":[..]} in global coordinates,
-            # expressed as an offset placement relative to the XY plane
-            z = App.Vector(*plane["normal"]).normalize()
-            xd = App.Vector(*plane.get("x_dir", [1, 0, 0]))
-            x = (xd - z * xd.dot(z))
-            if x.Length < 1e-9:
-                x = z.cross(App.Vector(0, 0, 1)) if abs(z.z) < 0.9 else App.Vector(1, 0, 0)
-            x.normalize()
-            y = z.cross(x)
-            o = App.Vector(*plane["origin"])
+            # arbitrary plane, expressed as an offset placement relative to the XY plane
+            o, x, y, z = self._frame(plane)
             m = App.Matrix(x.x, y.x, z.x, o.x, x.y, y.y, z.y, o.y, x.z, y.z, z.z, o.z, 0, 0, 0, 1)
             sk.AttachmentSupport = (self._plane("XY"), [""])
             sk.AttachmentOffset = App.Placement(m)
@@ -311,7 +372,16 @@ class Session:
         self.body = self.bodies[index]
         return {"ok": True, "active_body": index, "bodies": self._bodies_info()}
 
-    def pad(self, plane, geometry, length, offset=0, reversed=False, midplane=False):
+    def pad(self, plane=None, geometry=None, length=None, offset=0, reversed=False, midplane=False, face=None,
+            holes=False):
+        if length is None:
+            raise ValueError("length is required")
+        where = f"{plane}@{offset}"
+        if face is not None:    # outline taken from a planar face of the reference, extruded into the material
+            plane, geometry = self._face_profile(face, "all" if holes else "outer", into_material=True)
+            offset, where = 0, f"face{int(face)}" + ("+holes" if holes else "")
+        elif plane is None or geometry is None:
+            raise ValueError("give either face, or plane and geometry")
         before = self._tip_shape()
         sk = self._make_sketch(plane, offset, geometry)
         feat = self.body.newObject("PartDesign::Pad", "Pad")
@@ -325,12 +395,23 @@ class Session:
             return self._no_effect([feat.Name, sk.Name], "pad added nothing: the profile lies entirely inside the "
                                    "existing solid (check plane, offset and direction)")
         return self._finish(feat, [feat.Name, sk.Name],
-                            f"pad {plane}@{offset} len={length} rev={reversed} mid={midplane}")
+                            f"pad {where} len={length} rev={reversed} mid={midplane}")
 
-    def pocket(self, plane, geometry, depth=None, offset=0, reversed=False, through_all=False):
+    def pocket(self, plane=None, geometry=None, depth=None, offset=0, reversed=False, through_all=False, face=None,
+               loops="inner"):
         before = self._tip_shape()
         if before is None:
             return {"ok": False, "error": "pocket needs an existing solid; use pad first"}
+        if depth is None and not through_all:
+            raise ValueError("give depth or through_all")
+        where = f"{plane}@{offset}"
+        if face is not None:
+            # inner loops (openings in that face): cut into the material behind the face;
+            # outer loop (the face is the floor of a recess): cut from the floor out toward the open side
+            plane, geometry = self._face_profile(face, loops, into_material=(loops == "outer"))
+            offset, where = 0, f"face{int(face)}/{loops}"
+        elif plane is None or geometry is None:
+            raise ValueError("give either face, or plane and geometry")
         v0 = before.Volume
         sk = self._make_sketch(plane, offset, geometry)
         feat = self.body.newObject("PartDesign::Pocket", "Pocket")
@@ -349,7 +430,7 @@ class Session:
                 return self._no_effect([feat.Name, sk.Name], "pocket removed nothing in either direction: the "
                                        "sketch does not overlap the solid (check plane, offset and position)")
         return self._finish(feat, [feat.Name, sk.Name],
-                            f"pocket {plane}@{offset} depth={depth} through={through_all} rev={feat.Reversed}")
+                            f"pocket {where} depth={depth} through={through_all} rev={feat.Reversed}")
 
     def hole(self, plane, x=None, y=None, diameter=None, depth=None, offset=0, reversed=False, through_all=False,
              positions=None, counterbore_diameter=None, counterbore_depth=None, countersink_diameter=None,
