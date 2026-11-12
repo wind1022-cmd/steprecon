@@ -57,6 +57,13 @@ def main():
     files = expand(a.files)
     if not files:
         raise SystemExit("no STEP/IGES files found")
+    missing = [f for f in files if not os.path.isfile(f)]
+    if missing:
+        hint = ""
+        if len(a.files) > 1:    # an unquoted path with spaces arrives as several pieces
+            hint = ('\nIf the path contains spaces or parentheses it was split into pieces: put the whole path in '
+                    'double quotes, e.g.\n  run.py "C:\\my folder (2)\\part.stp" ...')
+        raise SystemExit("file not found: " + "\n                ".join(missing) + hint)
     backend = cli.backend_from_args(a)
     kw = cli.run_kwargs(a)
     os.makedirs(a.out, exist_ok=True)
