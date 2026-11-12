@@ -40,7 +40,7 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 ```
 .\fc.cmd run_tests.py
 ```
-마지막 줄에 `17/17 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
+마지막 줄에 `18/18 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
 
 ## 4. 로컬 AI(Ollama) 준비
 1. https://ollama.com 에서 Ollama를 받아 설치합니다.

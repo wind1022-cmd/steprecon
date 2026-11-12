@@ -22,6 +22,9 @@ Conventions (global coordinates in mm):
   {"type":"line","p1":..,"p2":..}, {"type":"arc","c":[x,y],"r":r,"a0":deg,"a1":deg} (counter-clockwise).
   Profiles must be closed; use only dimensions that are plausible design values (snap to 0.5 mm etc).
 - Edge indices for fillet/chamfer come from list_edges (1-based) of the CURRENT tip; they change after every feature.
+  Fillets and chamfers, last: call list_edges with only_missing=true. It lists the sharp edges of your solid that the
+  reference does not have and, for each, "suggest": {"fillet": radius} or {"chamfer": size} measured from the
+  reference. Apply exactly those (one call per group of edges with the same suggestion), then list again.
 
 - Outlines from the reference (PREFERRED for any outline that is not a plain rectangle or circle - do not retype
   coordinates): every Plane face lists "outline" (edge kinds of its outer boundary), "holes" (number of inner loops)
@@ -222,10 +225,13 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "edges": {"type": "array", "items": {"type": "integer"}}, "size": {"type": "number"}},
          "required": ["edges", "size"]}},
-    {"name": "list_edges", "description": "List edges (1-based index, type, length, endpoints) of the current result.",
+    {"name": "list_edges", "description": "List edges (1-based index, type, length, endpoints) of the current result; "
+     "in_reference tells whether the reference has the edge, suggest which fillet/chamfer it has there instead.",
      "input_schema": {"type": "object", "properties": {
          "only_type": {"type": "string", "description": "e.g. Line or Circle"},
-         "min_length": {"type": "number"}}}},
+         "min_length": {"type": "number"},
+         "only_missing": {"type": "boolean", "description": "only edges the reference does not have, each with the "
+                          "fillet radius or chamfer size the reference has there"}}}},
     {"name": "compare", "description": "Compare current result with the reference: volume diff, XOR %, "
      "missing/extra regions, face type histograms, converged flag.",
      "input_schema": {"type": "object", "properties": {}}},

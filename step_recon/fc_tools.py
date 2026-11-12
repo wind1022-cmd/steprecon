@@ -732,11 +732,40 @@ class Session:
     def chamfer(self, edges, size):
         return self._dress("Chamfer", edges, size)
 
-    def list_edges(self, only_type=None, min_length=0.0):
-        """1-based edge indices of the current tip shape (matches 'EdgeN' naming)."""
+    def _dress_hint(self, tip, e, mid):
+        """For a sharp edge of the current solid that the reference does not have: is the reference rounded or
+        bevelled there, and by how much? Returns {"fillet": r} / {"chamfer": size} or None.
+        The corner point lies d away from the reference's surface; with t = angle between the two faces,
+        a fillet of radius r gives d = r (1/sin(t/2) - 1), an equal chamfer of size c gives d = c cos(t/2)."""
+        try:
+            d, _, info = self.ref.distToShape(Part.Vertex(mid))
+            if d < 1e-5 or not info or info[0][0] != "Face":
+                return None
+            kind = type(self.ref.Faces[info[0][1]].Surface).__name__
+            faces = tip.ancestorsOfType(e, Part.Face)
+            t = math.pi / 2
+            if len(faces) == 2:
+                n = [f.normalAt(*f.Surface.parameter(mid)) for f in faces]
+                t = math.pi - n[0].getAngle(n[1])
+            if not 0.2 < t < math.pi - 0.2:
+                return None
+            if kind in ("Cylinder", "Toroid", "Sphere"):
+                return {"fillet": round(d / (1.0 / math.sin(t / 2) - 1.0), 2)}
+            if kind in ("Plane", "Cone"):
+                return {"chamfer": round(d / math.cos(t / 2), 2)}
+        except Exception:
+            pass
+        return None
+
+    def list_edges(self, only_type=None, min_length=0.0, only_missing=False):
+        """1-based edge indices of the current tip shape (matches 'EdgeN' naming).
+        Every edge says whether the reference has it too; for those it lacks, `suggest` tells which dress-up
+        feature (and size) the reference has in that place. only_missing lists just those edges."""
         s = self._tip_shape()
         if s is None:
             return {"ok": False, "error": "no solid yet"}
+        if getattr(self, "_ref_edges", None) is None:
+            self._ref_edges = Part.Compound(self.ref.Edges)
         out = []
         for i, e in enumerate(s.Edges, 1):
             t = type(e.Curve).__name__
@@ -744,14 +773,31 @@ class Session:
                 continue
             if e.Length < min_length:
                 continue
+            mid = e.valueAt((e.FirstParameter + e.LastParameter) / 2.0)
+            try:
+                in_ref = self._ref_edges.distToShape(Part.Vertex(mid))[0] < 1e-4
+            except Exception:
+                in_ref = True
+            if only_missing and in_ref:
+                continue
             a, b = e.Vertexes[0].Point, e.Vertexes[-1].Point
             d = {"edge": i, "type": t, "length": round(e.Length, 3),
                  "p1": [round(a.x, 3), round(a.y, 3), round(a.z, 3)],
                  "p2": [round(b.x, 3), round(b.y, 3), round(b.z, 3)]}
             if t == "Circle":
                 d["radius"] = round(e.Curve.Radius, 3)
+            d["in_reference"] = in_ref
+            if not in_ref:
+                hint = self._dress_hint(s, e, mid)
+                if hint:
+                    d["suggest"] = hint
             out.append(d)
-        return {"ok": True, "edges": out}
+        res = {"ok": True, "edges": out}
+        if only_missing:
+            res["note"] = ("edges of your solid that the reference does not have: apply the suggested fillet/chamfer "
+                           "(group edges with the same suggestion in one call); an edge without a suggestion "
+                           "usually belongs to a wrong or missing feature")
+        return res
 
     def compare(self):
         """Compare ALL bodies together against the reference."""
