@@ -37,7 +37,7 @@ def main():
     for n, f in enumerate(files, 1):
         base = os.path.splitext(os.path.basename(f))[0]
         t0 = time.time()
-        row = {"file": f, "holes": "", "fillets": "", "chamfers": "", "features": "", "identical": "", "xor_pct": "", "sketches_constrained": "",
+        row = {"file": f, "holes": "", "fillets": "", "chamfers": "", "faces": "", "features": "", "identical": "", "xor_pct": "", "sketches_constrained": "",
                "seconds": "", "error": ""}
         try:
             ref = analyze.load_shape(f)
@@ -46,6 +46,7 @@ def main():
             cmp_ = sess.compare()
             sk = saved.get("sketches", {})
             row.update(holes=rep["holes_made"], fillets=rep["fillets_made"], chamfers=rep["chamfers_made"],
+                       faces=rep.get("faces_made", 0),
                        features=rep["features"], identical=bool(cmp_.get("converged")),
                        xor_pct=cmp_.get("xor_pct"),
                        sketches_constrained=f"{sk.get('fully_constrained', 0)}/{sk.get('sketches', 0)}")
@@ -54,7 +55,8 @@ def main():
                 json.dump(rep, fh, indent=2)
             note = f" ({len(rep['skipped'])} skipped)" if rep["skipped"] else ""
             print(f"[{n}/{len(files)}] {base}: {rep['holes_made']} holes, {rep['fillets_made']} filleted and "
-                  f"{rep['chamfers_made']} chamfered edges in {rep['features']} features{note}, "
+                  f"{rep['chamfers_made']} chamfered edges, {rep.get('faces_made', 0)} movable faces in "
+                  f"{rep['features']} features{note}, "
                   f"identical={row['identical']} xor={row['xor_pct']}%, sketches fully constrained "
                   f"{row['sketches_constrained']}")
         except Exception as e:

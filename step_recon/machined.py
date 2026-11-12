@@ -15,7 +15,8 @@ Nothing is taken on trust: every step is checked against the reference, and what
 left in the blank untouched. So the result always equals the reference; only the number of features varies.
 
 Recognised: complete concave cylinders (through or blind, any direction, each step of a counterbore);
-constant-radius fillets (straight, around circular edges, with their corner patches); equal-leg chamfers.
+constant-radius fillets (straight, around circular edges, with their corner patches); equal-leg chamfers;
+flat faces whose surroundings run straight along their normal, as movable faces (thickness, height).
 Left in the blank: everything else (drill points, slots, threads, variable fillets, freeform shapes, drafts)."""
 import math
 
@@ -296,9 +297,115 @@ def _dress(sess, report):
             report["_refused"].add(str(first))
 
 
+def _thickness(shape, face, normal):
+    """How much material lies straight behind a planar face: probed at several points, the value met most often
+    wins (under a chamfer or beside a boss the depth differs locally). 0 if unknown."""
+    try:
+        verts, tris = face.tessellate(max(shape.BoundBox.DiagonalLength * 0.01, 1e-3))
+        reach = shape.BoundBox.DiagonalLength * 1.1
+        found = []
+        step = max(1, len(tris) // 24)
+        for a, b, c in tris[::step][:24]:
+            p = (verts[a] + verts[b] + verts[c]) * (1.0 / 3.0)
+            line = Part.makeLine(p - normal * 1e-4, p - normal * reach)
+            for e in line.common(shape).Edges:
+                ends = [e.valueAt(e.FirstParameter), e.valueAt(e.LastParameter)]
+                if min(v.distanceToPoint(p) for v in ends) < 1e-3:      # the stretch that starts at the face
+                    found.append(round(e.Length + 1e-4, 3))
+                    break
+        if not found:
+            return 0.0
+        counts = {}
+        for v in found:
+            counts[v] = counts.get(v, 0) + 1
+        top = max(counts.values())
+        return min(v for v, k in counts.items() if k == top)
+    except Exception:
+        return 0.0
+
+
+def add_face_moves(sess, report, limit=12):
+    """Make the position of flat faces a parameter (plate thickness, boss height, depth of a seat ...).
+
+    A face qualifies if everything around it runs straight along its normal - planes square to it, cylinders
+    parallel to its normal - so pushing or pulling it simply lengthens or shortens those neighbours. Each such
+    face gets a Pad (push out) and a Pocket (push in) taken directly from the face, both switched off until the
+    parameter asks for a move; because the profile is the face itself, they follow changes made further up
+    (hole sizes, fillets). The largest `limit` faces are offered."""
+    body = sess.body
+    anchor = body.Tip
+    if anchor is None:
+        return
+    shape = anchor.Shape
+    nb = _neighbours(shape)
+    cands = []
+    for i, f in enumerate(shape.Faces):
+        if type(f.Surface).__name__ != "Plane" or not nb[i]:
+            continue
+        u0, u1, v0, v1 = f.ParameterRange
+        n = f.normalAt((u0 + u1) / 2, (v0 + v1) / 2)
+        ok = True
+        for _, j in nb[i]:
+            gs = shape.Faces[j].Surface
+            kind = type(gs).__name__
+            if kind == "Plane":
+                ok = abs(App.Vector(gs.Axis).normalize().dot(n)) < 1e-6
+            elif kind == "Cylinder":
+                ok = App.Vector(gs.Axis).cross(n).Length < 1e-6
+            else:
+                ok = False
+            if not ok:
+                break
+        if ok:
+            cands.append((f.Area, i, n))
+    cands.sort(key=lambda c: -c[0])
+    made = 0
+    for area, i, n in cands[:limit]:
+        name = f"Face{i + 1}"
+        thick = _thickness(shape, shape.Faces[i], n)
+        test = min(1.0, 0.25 * thick) if thick > 0 else 1.0
+        before = body.Tip.Shape.Volume
+        pad = body.newObject("PartDesign::Pad", "FaceMove")
+        pad.Profile = (anchor, [name])
+        pad.Length = test
+        cut = body.newObject("PartDesign::Pocket", "FaceMoveIn")
+        cut.Profile = (anchor, [name])
+        cut.Length = test
+        good = False
+        try:
+            cut.Suppressed = True
+            sess.doc.recompute()
+            grew = pad.isValid() and abs((pad.Shape.Volume - before) - area * test) <= 2e-3 * area * test
+            pad.Suppressed, cut.Suppressed = True, False
+            sess.doc.recompute()
+            shrank = cut.isValid() and abs((before - cut.Shape.Volume) - area * test) <= 2e-3 * area * test
+            cut.Suppressed = True
+            sess.doc.recompute()
+            good = grew and shrank and abs(body.Tip.Shape.Volume - before) <= 1e-9 * max(before, 1.0)
+        except Exception:
+            good = False
+        if not good:
+            for o in (cut, pad):
+                sess.doc.removeObject(o.Name)
+            feats = [o for o in body.Group if o.isDerivedFrom("PartDesign::Feature")]
+            body.Tip = feats[-1]
+            sess.doc.recompute()
+            continue
+        made += 1
+        pad.Label = f"Face_{made}"
+        cut.Label = f"Face_{made}_in"
+        pad.addProperty("App::PropertyString", "SR_Pair", "steprecon", "pocket that moves this face inward")
+        pad.addProperty("App::PropertyFloat", "SR_Thickness", "steprecon", "material behind the face at the start")
+        pad.SR_Pair, pad.SR_Thickness = cut.Name, float(thick)
+        sess._record([cut.Name, pad.Name], f"movable face {made} (thickness {thick:g})")
+    report["faces_made"] = made
+    report["features"] += made
+
+
 def _attempt(ref, blend_faces, exclude_holes):
     """One build: take `blend_faces` off, holes out, everything back on. Returns (session, report, identical)."""
-    report = {"holes_made": 0, "fillets_made": 0, "chamfers_made": 0, "features": 0, "skipped": [], "_refused": set()}
+    report = {"holes_made": 0, "fillets_made": 0, "chamfers_made": 0, "faces_made": 0, "features": 0, "skipped": [],
+              "_refused": set()}
     target = ref
     if blend_faces:
         target = _defeature(ref, blend_faces)
@@ -349,6 +456,10 @@ def build(ref):
         sess, report, _ = _attempt(ref, [], set())
         best = (sess, report)
     sess, report = best
+    try:
+        add_face_moves(sess, report)
+    except Exception as e:      # an extra: the part itself is complete without it
+        report["skipped"].append(f"movable faces: {type(e).__name__}: {e}")
     for key in sorted(report.pop("_excluded_holes", set())):
         report["skipped"].append(f"hole D{2 * key[6]:g}: could not be cut again cleanly")
     refused = report.pop("_refused", set())

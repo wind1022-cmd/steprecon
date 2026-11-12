@@ -81,6 +81,26 @@ report("parameters carry the model's values", abs(vals[fr3] - 3) < 1e-9 and abs(
 report("hole positions are parameters too", any(n.startswith("Hole_D5_x2.DistanceX") for n in names)
        and any(n.startswith("Hole_D5_x2.DistanceY") for n in names))
 
+# movable faces: the plate's underside (thickness 10) and the top of the boss (height 22)
+thick = sorted((p["value"], p["name"]) for p in plist if p["name"].endswith(".Thickness"))
+report("flat faces with straight surroundings become thickness parameters", [round(v, 3) for v, _ in thick] == [10.0, 22.0]
+       and rep.get("faces_made") == 2, str(thick))
+plate_t, boss_h = thick[0][1], thick[1][1]
+rows_t = doe.run(model, [{plate_t: 10}, {plate_t: 12}, {plate_t: 7}, {boss_h: 30, bore: 10}, {plate_t: 0}],
+                 os.path.join(tmp, "doe_thick"), verbose=False)
+area_bottom = 40 * 30 - (4 - math.pi) * 9 - math.pi * 16 - 2 * math.pi * 6.25
+dv = [float(r["volume"]) - float(rows_t[0]["volume"]) if r["ok"] else None for r in rows_t]
+report("plate thickness 10 -> 12 / 7 adds / removes exactly area x change", abs(dv[1] - 2 * area_bottom) < 0.05
+       and abs(dv[2] + 3 * area_bottom) < 0.05 and rows_t[1]["size_z"] == 24.0 and rows_t[2]["size_z"] == 19.0,
+       f"{dv[1]:.3f} {dv[2]:.3f} expected {2 * area_bottom:.3f} {-3 * area_bottom:.3f}")
+ring = math.pi * (64 - 25)
+bore_extra = math.pi * (25 - 16) * 22
+report("boss height 22 -> 30 together with a larger bore follows the new bore", rows_t[3]["ok"]
+       and abs(dv[3] - (8 * ring - bore_extra)) < 0.05 and rows_t[3]["size_z"] == 30.0, f"{dv[3]:.3f} expected {8 * ring - bore_extra:.3f}")
+report("thickness 0 is refused, not built", not rows_t[4]["ok"] and "larger than 0" in rows_t[4]["error"])
+check = compare.compare(ref, analyze.load_shape(os.path.join(tmp, "doe_thick", rows_t[0]["file"])))
+report("unmoved faces leave the part identical to the reference", check["xor_pct"] < 1e-3)
+
 # a full factorial run through the command line
 out = os.path.join(tmp, "doe_out")
 sys.argv = ["doe.py", model, "--vary", f"{fr3}=2:4:3", "--vary", f"{bore}=6,10", "--out", out]

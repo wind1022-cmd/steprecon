@@ -9,7 +9,7 @@
   --bg:#f3f5f8;--panel:#ffffff;--panel2:#f7f9fb;--ink:#17202b;--mut:#637083;--faint:#94a0b1;--line:#e1e6ed;
   --accent:#2563eb;--accent-ink:#fff;--accent-soft:#e8effe;--ok:#0f9d6b;--ok-soft:#e3f6ee;--warn:#b45309;--warn-soft:#fdf1dd;
   --bad:#c53030;--bad-soft:#fde8e8;--view1:#eef2f7;--view2:#dfe6ef;--solid:#c9d1dc;--edge:#2a3442;--shadow:0 6px 24px rgba(20,30,50,.10);
-  --hole:#3b82f6;--fillet:#10b981;--chamfer:#f59e0b;--other:#a855f7;
+  --hole:#3b82f6;--fillet:#10b981;--chamfer:#f59e0b;--face:#a855f7;--other:#64748b;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#0f1318;--panel:#171c23;--panel2:#1c222b;--ink:#e7ecf2;--mut:#98a4b5;--faint:#6c7888;--line:#28303b;
@@ -196,7 +196,7 @@ td.bad{color:var(--bad);text-align:left;white-space:normal}
         <div class="drop" id="drop">
           <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
           <h1>STEP 파일을 여기에 놓으세요</h1>
-          <p>히스토리가 없는 형상에서 구멍, 필렛, 모따기를 찾아 바꿀 수 있는 치수로 만듭니다</p>
+          <p>히스토리가 없는 형상에서 구멍, 필렛, 모따기, 두께를 찾아 바꿀 수 있는 치수로 만듭니다</p>
           <button class="btn primary" id="openBtn2">파일 선택</button>
           <div class="steps">
             <div class="step"><i>1</i><b>열기</b><span>형상을 분석해 피처를 분리합니다</span></div>
@@ -227,8 +227,8 @@ td.bad{color:var(--bad);text-align:left;white-space:normal}
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const CAT = {hole:"구멍", fillet:"필렛", chamfer:"모따기", other:"기타"};
-const PNAME = {Diameter:"지름", DistanceX:"X 위치", DistanceY:"Y 위치", Distance:"거리", Radius:"반지름", Size:"크기", Length:"깊이", Depth:"깊이", Angle:"각도"};
+const CAT = {hole:"구멍", fillet:"필렛", chamfer:"모따기", face:"두께·면", other:"기타"};
+const PNAME = {Diameter:"지름", DistanceX:"X 위치", DistanceY:"Y 위치", Distance:"거리", Radius:"반지름", Size:"크기", Length:"깊이", Depth:"깊이", Angle:"각도", Thickness:"두께", Offset:"이동량"};
 let S = null, edits = {}, factors = [], filter = "all", sel = 0, hover = 0, running = false, rows = [], showEdges = true;
 
 const fmt = (v, d = 3) => Number(v).toLocaleString("en-US", {maximumFractionDigits: d});
@@ -245,6 +245,7 @@ function ftitle(f){
   if(f.category === "hole"){ const d = get("Diameter"); return "구멍" + (d ? " Ø" + fmt(d.base) : "") + (f.count > 1 ? " ×" + f.count : ""); }
   if(f.category === "fillet"){ const r = get("Radius"); return "필렛" + (r ? " R" + fmt(r.base) : "") + (f.count > 1 ? " ×" + f.count : ""); }
   if(f.category === "chamfer"){ const s = get("Size"); return "모따기" + (s ? " " + fmt(s.base) : "") + (f.count > 1 ? " ×" + f.count : ""); }
+  if(f.category === "face"){ const t = get("Thickness"); return (t ? "두께 " + fmt(t.base) : "면 이동") + (f.side ? " · " + f.side.replace("-", "−") + " 면" : ""); }
   return f.label;
 }
 
@@ -261,11 +262,12 @@ const V = (() => {
   precision highp float; in vec3 vN; in vec3 vC; flat in float vId;
   uniform vec3 uR, uU, uD, uBase; uniform float uHi, uSel, uPick, uDim; out vec4 o;
   void main(){
-    if(uPick > 0.5){ float id = vId + 0.5; o = vec4(mod(floor(id), 256.0)/255.0, floor(id/256.0)/255.0, 0.0, 1.0); return; }
+    float fid = abs(vId);        // negative = a "quiet" feature (movable face): coloured only when pointed at
+    if(uPick > 0.5){ float id = fid + 0.5; o = vec4(mod(floor(id), 256.0)/255.0, floor(id/256.0)/255.0, 0.0, 1.0); return; }
     vec3 n = normalize(vN); if(dot(n, uD) < 0.0) n = -n;
     float l = 0.30 + 0.56*dot(n, uD) + 0.14*max(0.0, dot(n, normalize(uU*0.8 + uR*0.5)));
-    bool feat = vId > 0.5; bool hot = feat && (abs(vId-uHi) < 0.5 || abs(vId-uSel) < 0.5);
-    vec3 c = feat ? mix(uBase, vC, hot ? 1.0 : 0.62) : uBase;
+    bool feat = fid > 0.5; bool hot = feat && (abs(fid-uHi) < 0.5 || abs(fid-uSel) < 0.5);
+    vec3 c = feat ? mix(uBase, vC, hot ? 1.0 : (vId < 0.0 ? 0.0 : 0.62)) : uBase;
     if(uDim > 0.5 && !hot) c = mix(c, uBase, 0.75);
     c *= l; if(hot) c = c*1.12 + 0.07;
     o = vec4(c, 1.0); }`;
@@ -286,8 +288,8 @@ const V = (() => {
     const D = [cp*cy, cp*sy, sp]; let R = [-sy, cy, 0]; const Uv = [D[1]*R[2]-D[2]*R[1], D[2]*R[0]-D[0]*R[2], D[0]*R[1]-D[1]*R[0]]; return {D, R, U: Uv}; }
   function setMesh(m, feats, keep){
     const col = new Float32Array(m.feature.length * 3), id = new Float32Array(m.feature);
-    const cmap = {}; for(const f of feats) cmap[f.n] = rgb(f.color);
-    for(let i = 0; i < m.feature.length; i++){ const c = cmap[m.feature[i]] || [.5,.5,.5]; col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
+    const cmap = {}, quiet = {}; for(const f of feats){ cmap[f.n] = rgb(f.color); quiet[f.n] = f.category === "face"; }
+    for(let i = 0; i < m.feature.length; i++){ const c = cmap[m.feature[i]] || [.5,.5,.5]; if(quiet[m.feature[i]]) id[i] = -id[i]; col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2]; }
     vao = gl.createVertexArray(); gl.bindVertexArray(vao);
     const put = (name, data, n) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); const loc = gl.getAttribLocation(P, name); if(loc >= 0){ gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, 0, 0); } };
     put("aPos", new Float32Array(m.positions), 3); put("aNor", new Float32Array(m.normals), 3); put("aCol", col, 3); put("aId", id, 1);
@@ -348,7 +350,7 @@ function setHover(n){ if(hover === n) return; hover = n; document.querySelectorA
 function setSel(n, scroll){ sel = sel === n ? 0 : n; document.querySelectorAll(".feat").forEach(e => { const on = +e.dataset.n === sel; e.classList.toggle("sel", on); if(on){ e.classList.add("open"); if(scroll) e.scrollIntoView({block: "nearest", behavior: "smooth"}); } }); V.redraw(); }
 function renderFilters(){
   const counts = {all: S.features.length}; for(const f of S.features) counts[f.category] = (counts[f.category] || 0) + 1;
-  $("filters").innerHTML = ["all", "hole", "fillet", "chamfer", "other"].filter(k => counts[k]).map(k =>
+  $("filters").innerHTML = ["all", "hole", "fillet", "chamfer", "face", "other"].filter(k => counts[k]).map(k =>
     `<button class="fbtn ${filter === k ? "on" : ""}" data-f="${k}" style="--c:var(--${k === "all" ? "faint" : k})">${k === "all" ? "" : "<i></i>"}${k === "all" ? "전체" : CAT[k]} ${counts[k]}</button>`).join("");
   $("filters").querySelectorAll("button").forEach(b => b.onclick = () => { filter = b.dataset.f; renderFilters(); renderList(); });
 }
@@ -496,7 +498,8 @@ api("/api/state").then(async st => { if(!st.loaded) return; loaded(st);
   if(location.hash === "#selftest"){          // drives the page once without a mouse (used by the automated screenshot)
     const P = allParams(), pick = k => Object.keys(P).find(n => P[n].short.startsWith(k));
     for(const n of [pick("Radius"), pick("Diameter")]) if(n) toggleFactor(n);
-    const f = S.features.find(x => x.category === "fillet"); if(f){ sel = 0; setSel(f.n, true); }
+    const want = location.search.includes("face") ? "face" : "fillet";
+    const f = S.features.find(x => x.category === want); if(f){ sel = 0; setSel(f.n, true); }
     if(location.search.includes("run")) await runDoe();
     document.title = "selftest done"; }
 }).catch(() => {});

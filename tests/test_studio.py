@@ -64,15 +64,18 @@ with open(step, "rb") as f:
     code, s = call("/api/open?name=plate.stp", f.read())
 feats = s.get("features", [])
 cats = sorted(f["category"] for f in feats)
-report("upload -> features", code == 200 and s["loaded"] and s["info"]["identical"] and cats == ["fillet", "hole"], str(cats))
+report("upload -> features", code == 200 and s["loaded"] and s["info"]["identical"] and cats == ["face", "face", "fillet", "hole"], str(cats))
 m = s["mesh"]
 nv = len(m["positions"]) // 3
 report("mesh is consistent", nv > 100 and len(m["normals"]) == len(m["positions"]) and len(m["feature"]) == nv
        and len(m["indices"]) % 3 == 0 and max(m["indices"]) < nv and len(m["lines"]) % 6 == 0
        and [round(x) for x in m["bbox"]] == [0, 0, 0, 40, 30, 10])
 owned = {n: m["feature"].count(n) for n in set(m["feature"])}
-report("faces belong to the feature that made them; most of the part is plain blank",
-       set(owned) == {0, 1, 2} and owned[0] > 0 and owned[1] > 0 and owned[2] > 0, str(owned))
+report("faces belong to the feature that made them or would move them; the rest is plain blank",
+       set(owned) == {0, 1, 2, 3, 4} and all(v > 0 for v in owned.values()), str(owned))
+thick = sorted(p["base"] for f in feats if f["category"] == "face" for p in f["params"])
+sides = sorted(f["side"] for f in feats if f["category"] == "face")
+report("both sides of the plate are thickness parameters", thick == [10.0, 10.0] and sides == ["+Z", "-Z"], f"{thick} {sides}")
 hole = next(f for f in feats if f["category"] == "hole")
 fil = next(f for f in feats if f["category"] == "fillet")
 dia = next(p for p in hole["params"] if p["short"].startswith("Diameter"))

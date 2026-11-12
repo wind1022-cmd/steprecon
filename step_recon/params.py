@@ -2,7 +2,7 @@
 
 A parameter is either a feature property (pad length, pocket depth, fillet radius, chamfer size) or a dimension of a
 sketch (diameter, radius, distance). Names are built from the feature's label, e.g.
-    Hole_D6_x4.Diameter1    Hole_D6_x4.DistanceX1    Pad.Length    Fillet_R3_x4.Radius
+    Hole_D6_x4.Diameter1    Hole_D6_x4.DistanceX1    Pad.Length    Fillet_R3_x4.Radius    Face_1.Thickness
 and stay the same as long as the model's tree does."""
 import re
 
@@ -48,8 +48,24 @@ def collect(doc):
         sk = _profile(o)
         if sk is not None and sk.TypeId == "Sketcher::SketchObject":
             owner.setdefault(sk.Name, o)
+    movers = {o.SR_Pair for o in doc.Objects if hasattr(o, "SR_Pair")}
     for o in doc.Objects:
         t = o.TypeId
+        if hasattr(o, "SR_Pair"):
+            # a movable face: one number (the thickness behind it, or the offset if that is unknown) drives a
+            # pad for moving out and a pocket for moving in
+            cut = doc.getObject(o.SR_Pair)
+            off = 0.0
+            if not o.Suppressed:
+                off = float(o.Length)
+            elif cut is not None and not cut.Suppressed:
+                off = -float(cut.Length)
+            t0 = float(o.SR_Thickness)
+            add(f"{_clean(o.Label)}." + ("Thickness" if t0 > 0 else "Offset"), t0 + off, "length",
+                obj=o.Name, pair=o.SR_Pair, t0=t0)
+            continue
+        if o.Name in movers:
+            continue
         if t in FEATURE_PROPS:
             label = _clean(o.Label)
             for prop in FEATURE_PROPS[t]:
@@ -89,7 +105,17 @@ def apply(doc, params, values):
         p = by_name[name]
         obj = doc.getObject(p["obj"])
         unit = "deg" if p["kind"] == "angle" else "mm"
-        if "constraint" in p:
+        if "pair" in p:
+            cut = doc.getObject(p["pair"])
+            if p["t0"] > 0 and float(value) <= 0:
+                raise ValueError(f"{name} must be larger than 0")
+            off = float(value) - p["t0"]
+            obj.Suppressed, cut.Suppressed = not off > 1e-9, not off < -1e-9
+            if off > 1e-9:
+                obj.Length = off
+            elif off < -1e-9:
+                cut.Length = -off
+        elif "constraint" in p:
             obj.setDatum(p["constraint"], App.Units.Quantity(f"{float(value)!r} {unit}"))
         else:
             setattr(obj, p["prop"], float(value))

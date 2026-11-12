@@ -19,10 +19,12 @@ import FreeCAD as App
 from . import analyze, machined, param_map, params as P
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PALETTE = {"hole": "#3b82f6", "fillet": "#10b981", "chamfer": "#f59e0b", "other": "#a855f7"}
+PALETTE = {"hole": "#3b82f6", "fillet": "#10b981", "chamfer": "#f59e0b", "face": "#a855f7", "other": "#64748b"}
 
 
 def _category(feat_type, label):
+    if label.startswith("Face_"):
+        return "face"
     if feat_type in ("Pocket", "Hole") or label.startswith("Hole"):
         return "hole"
     if feat_type == "Fillet":
@@ -96,7 +98,7 @@ class Studio:
                      "identical": bool(cmp_.get("converged")), "xor_pct": cmp_.get("xor_pct"),
                      "faces": len(ref.Faces), "skipped": report.get("skipped", []),
                      "counts": {"holes": report["holes_made"], "fillets": report["fillets_made"],
-                                "chamfers": report["chamfers_made"]},
+                                "chamfers": report["chamfers_made"], "faces": report.get("faces_made", 0)},
                      "sketches": saved.get("sketches", {})}
         return self.state(mesh=True)
 
@@ -133,7 +135,22 @@ class Studio:
             for k in keys - prev:
                 owner_of_key[k] = n
             prev = keys
-        return [owner_of_key.get(_face_key(f), 0) for f in shape.Faces]
+        owner = [owner_of_key.get(_face_key(f), 0) for f in shape.Faces]
+        # a movable face that has not been moved made no faces of its own: show the face it would move
+        for o in self._body_features():
+            if not hasattr(o, "SR_Pair") or o.Name not in number:
+                continue
+            try:
+                src, subs = o.Profile
+                target = src.Shape.getElement(subs[0])
+                k, c, a = _face_key(target), target.CenterOfMass, target.Area
+            except Exception:
+                continue
+            for i, f in enumerate(shape.Faces):
+                if owner[i] == 0 and _face_key(f) == k and abs(f.Area - a) < 1e-3 * max(a, 1.0) \
+                        and f.CenterOfMass.distanceToPoint(c) < 1e-3:
+                    owner[i] = number[o.Name]
+        return owner
 
     def mesh(self):
         """Triangles (with a feature number per vertex) and edge lines of the current solid."""
@@ -182,7 +199,19 @@ class Studio:
         for f in self.features:
             cat = _category(f["type"], f["label"])
             a = f["anchors"][0] if f["anchors"] else None
-            feats.append({"n": f["n"], "label": f["label"], "type": f["type"], "category": cat,
+            side = ""
+            if cat == "face":       # which way the face looks, e.g. "-Z"
+                try:
+                    o = self.doc.getObject(f["name"])
+                    face = o.Profile[0].Shape.getElement(o.Profile[1][0])
+                    u0, u1, v0, v1 = face.ParameterRange
+                    nrm = face.normalAt((u0 + u1) / 2, (v0 + v1) / 2)
+                    k = max(range(3), key=lambda i: abs(nrm[i]))
+                    if abs(nrm[k]) > 0.999:
+                        side = ("+" if nrm[k] > 0 else "-") + "XYZ"[k]
+                except Exception:
+                    pass
+            feats.append({"n": f["n"], "label": f["label"], "type": f["type"], "category": cat, "side": side,
                           "color": PALETTE[cat], "count": f.get("count", 1),
                           "position": None if a is None else [round(a.x, 3), round(a.y, 3), round(a.z, 3)],
                           "params": [{"name": p["name"], "short": p["name"].split(".", 1)[-1],

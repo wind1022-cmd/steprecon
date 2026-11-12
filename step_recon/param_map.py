@@ -45,8 +45,12 @@ def _features(doc, plist):
         edges = []
         sk = P._profile(feat)
         try:
-            if sk is not None:
+            if sk is not None and sk.TypeId == "Sketcher::SketchObject":
                 edges = list(sk.Shape.Edges)
+            elif sk is not None:            # profile is a face of an earlier feature (movable faces)
+                for sub in feat.Profile[1]:
+                    edges += list(sk.Shape.getElement(sub).Edges)
+                sk = None
             elif hasattr(feat, "Base") and feat.Base:
                 base, subs = feat.Base
                 edges = [base.Shape.getElement(s) for s in subs if s.startswith("Edge")]

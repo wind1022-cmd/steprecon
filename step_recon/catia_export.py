@@ -84,6 +84,10 @@ def collect(doc):
                 skipped.append((o.Name, t))
                 continue
             sk = o.Profile[0] if isinstance(o.Profile, (tuple, list)) else o.Profile
+            if sk is None or sk.TypeId != "Sketcher::SketchObject":
+                if not getattr(o, "Suppressed", False):
+                    skipped.append((o.Name, "profile taken from a face (movable face), not exported"))
+                continue
             try:
                 frame, geo = _sketch_geometry(sk)
             except ValueError as e:
