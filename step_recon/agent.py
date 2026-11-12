@@ -51,9 +51,12 @@ tangent arcs; a Toroid's major_radius is the bend radius). Constant-section chan
 with cut=true. Sections that change size or shape between two parallel planes (Cone faces that are not chamfers,
 tapered sides that are not a constant draft) -> loft with ruled=true.
 Workflow: study the summary (planes with normal/offset, cylinders with concave=true are holes, convex cylinders
-or Toroid/Cone faces near edges hint at fillets/chamfers). Build step by step, call compare after each major
-feature and use missing_regions / extra_regions bounding boxes to see what is still wrong. Use undo to retract
-a wrong feature. When compare reports converged=true, call finish. Be economical with tool calls."""
+or Toroid/Cone faces near edges hint at fillets/chamfers). Build step by step. Every tool result that changes the
+shape carries "state": xor_pct (difference to the target, 0 = identical), volume vs target_volume, bbox vs target_bbox
+([xmin,ymin,zmin,xmax,ymax,zmax]), faces vs target_faces and missing_regions / extra_regions bounding boxes showing
+what is still wrong - read it instead of calling compare. First make bbox equal target_bbox (right plane, position and
+direction), then fix details. Use undo to retract a wrong feature. The run ends by itself when state.converged is
+true; call finish only to give up. Always answer with a tool call, never with prose. Be economical with tool calls."""
 
 # Short prompt for small local models: drop the advanced sections (revolve/pattern/mold/freeform guidance).
 SYSTEM_BASIC = SYSTEM[:SYSTEM.index("Rotational parts:")] + SYSTEM[SYSTEM.index("Workflow:"):]
@@ -61,6 +64,8 @@ SYSTEM_BASIC = SYSTEM[:SYSTEM.index("Rotational parts:")] + SYSTEM[SYSTEM.index(
 # Tool subsets. "basic" keeps small models focused (fewer, simpler tools); "full" exposes everything.
 BASIC_TOOLS = ("pad", "pocket", "hole", "fillet", "chamfer", "list_edges", "compare", "undo", "finish")
 PROFILES = {"full": None, "basic": BASIC_TOOLS}
+# tools that do not change the shape (no progress report is attached to their results)
+READ_ONLY = ("compare", "list_edges", "list_faces", "features", "select_body", "new_body", "finish")
 
 PLANE = {"description": "XY / XZ / YZ, or an object {origin:[x,y,z], normal:[x,y,z], x_dir:[x,y,z]} "
          "for an arbitrary plane in global coordinates (sketch x axis = x_dir)",
@@ -259,20 +264,34 @@ def run(step_path, out_dir, max_turns=40, client=None, backend=None, profile="fu
               f"silently cut off)")
     finished = False
     nudges = 0
+    finish_refused = False
+
+    def state():
+        try:
+            return sess.state()
+        except Exception:
+            return None
 
     for turn in range(max_turns):
         reply = backend.complete()
         result["turns"] = turn + 1
         if not reply.calls:
-            # small models sometimes answer in prose; nudge them back to the protocol twice before giving up
-            if nudges < 2 and turn < max_turns - 1:
+            # small models sometimes answer in prose or with nothing at all; nudge them back to the protocol
+            # (up to 3 times in a row) before giving up
+            if nudges < 3 and turn < max_turns - 1:
                 nudges += 1
-                backend.add_user("Continue with a tool call (or call finish).")
+                st = state()
+                backend.add_user("No tool call received. "
+                                 + (f"Current state: {json.dumps(st)}. " if st else "Nothing is built yet. ")
+                                 + "Answer with exactly one tool call now.")
                 if verbose:
-                    print(f"[{turn}] (no tool call; nudging) {reply.text[:120]!r}")
+                    info = getattr(backend, "last_info", "")
+                    print(f"[{turn}] (no tool call; nudging) {reply.text[:120]!r} {info}")
                 continue
             break
+        nudges = 0
         results = []
+        converged = False
         for c in reply.calls:
             try:
                 if c.error:
@@ -280,16 +299,32 @@ def run(step_path, out_dir, max_turns=40, client=None, backend=None, profile="fu
                 elif c.name not in allowed:
                     out = {"ok": False, "error": f"unknown tool {c.name!r}; available: {sorted(allowed)}"}
                 elif c.name == "finish":
-                    out = sess.save(out_path)
-                    finished = True
+                    st = state()
+                    if st and not st["converged"] and not finish_refused and turn < max_turns - 1:
+                        finish_refused = True       # weak models give up early; push back once
+                        out = {"ok": False, "error": "not converged yet: read state, undo what is wrong and keep "
+                               "fixing. Call finish again only if you really give up.", "state": st}
+                    else:
+                        out = sess.save(out_path)
+                        finished = True
                 else:
                     out = getattr(sess, c.name)(**c.args)
+                    if c.name not in READ_ONLY and isinstance(out, dict) and out.get("ok"):
+                        st = state()
+                        if st:
+                            out["state"] = st
+                            converged = st["converged"]
             except Exception as e:  # report tool errors back so the model can recover
                 out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             if verbose:
-                print(f"[{turn}] {c.name} -> {json.dumps(out)[:200]}")
+                print(f"[{turn}] {c.name} -> {json.dumps(out)[:300]}")
             results.append((c, json.dumps(out)))
         backend.add_results(results)
+        if converged and not finished:      # nothing left to do: do not spend another (slow) model turn on finish
+            sess.save(out_path)
+            finished = True
+            if verbose:
+                print(f"[{turn}] converged -> saved")
         if finished:
             break
 

@@ -28,7 +28,7 @@ class FakeBackend:
         self.i = 0
 
     def complete(self):
-        name, args = self.script[self.i]
+        name, args = self.script[min(self.i, len(self.script) - 1)]    # a refused early finish is simply repeated
         self.i += 1
         return llm.Reply(text="", calls=[llm.Call(id=f"c{self.i}", name=name, args=args)])
 

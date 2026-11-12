@@ -40,7 +40,7 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 ```
 .\fc.cmd run_tests.py
 ```
-마지막 줄에 `13/13 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
+마지막 줄에 `14/14 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
 
 ## 4. 로컬 AI(Ollama) 준비
 1. https://ollama.com 에서 Ollama를 받아 설치합니다.
@@ -79,7 +79,11 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 | `--attempts 5` | 같아지지 않으면 처음부터 다시 시도하는 횟수. 같아지면 바로 다음 파일로 넘어갑니다 |
 | `--out out_parts` | 결과 폴더 |
 | `--skip-done` | 이미 성공한 파일은 건너뜀. 중간에 끊겼을 때 같은 명령 끝에 붙여 다시 실행 |
+| `--reasoning-effort low` | 추론형 모델(gpt-oss 등)이 턴마다 생각하는 양을 줄입니다. **속도가 가장 크게 빨라집니다** |
+| `--max-tokens 8192` | 한 턴의 출력 한도(생각 포함, 기본 4096). 화면에 `finish_reason=length`가 보이면 올리세요 |
 | `--profile full` | 도구 24개 전체 사용(회전체·패턴·스윕·다중 바디 등). 큰 모델에서만 권장. 기본은 9개짜리 `basic` |
+
+도구 결과마다 원본과의 차이(`state`)가 자동으로 붙고, 같아지는 순간 저절로 저장하고 끝납니다. 모델이 `compare`나 `finish`를 따로 부를 필요가 없습니다.
 
 오래 걸리는 작업입니다. 중간에 멈추려면 `Ctrl+C`를 누르고, 이어서 하려면 `--skip-done`을 붙여 다시 실행하세요.
 
@@ -129,7 +133,8 @@ PowerShell 실행 정책과 무관하게 동작합니다. 정책상 허용되는
 | 모델을 못 찾음 (`model ... not found`) | `ollama pull <모델 이름>`을 했는지, `--model`의 이름이 `ollama list`와 같은지 확인 |
 | 모델이 도구를 안 쓰고 말만 함 | `--tool-mode text`를 붙여 봅니다. 그래도 안 되면 더 큰 모델이 필요합니다 |
 | 모델이 지침을 무시하는 듯함 | 4-2의 `OLLAMA_CONTEXT_LENGTH` 설정 후 Ollama를 재시작했는지 확인. 실행 시작 때 나오는 `prompt is about N tokens`보다 커야 합니다 |
-| 너무 느림 | GPU를 쓰는지 확인(`ollama ps`의 PROCESSOR 열). `--turns`를 줄이거나 더 작은/양자화된 모델 사용 |
+| `(no tool call; nudging)`이 자주 나옴 | 모델이 도구 호출 없이 답한 것입니다. 줄 끝의 `finish_reason=length`는 생각하다가 출력 한도에 걸린 것이니 `--reasoning-effort low` 또는 `--max-tokens 8192`를 쓰세요. 그 외에는 `--tool-mode text`를 시도하세요 |
+| 너무 느림 | 추론형 모델이면 `--reasoning-effort low`. `--profile full`을 쓰고 있다면 빼 보세요(지침이 3배 깁니다). GPU를 쓰는지 확인(`ollama ps`의 PROCESSOR 열). `--turns`를 줄이거나 더 작은/양자화된 모델 사용 |
 | 계속 `converged=False` | `transcript.json`으로 어디서 막히는지 확인. 형상이 회전체·패턴·곡면을 포함하면 `basic` 도구로는 못 만듭니다(`--profile full` + 큰 모델 필요) |
 | FreeCAD에서 열었더니 선(스케치)만 보임 | 예전 버전으로 만든 파일입니다. 모델은 들어 있고 표시만 꺼진 상태입니다. 왼쪽 트리에서 `Body`를 선택하고 스페이스바를 누르면 보입니다. 최신 코드를 다시 받으면 처음부터 솔리드가 보이게 저장됩니다 |
 | 테스트가 일부 실패 | FreeCAD 버전이 1.x인지 확인(`.\fc.cmd -c "import FreeCAD; print(FreeCAD.Version()[:3])"`) |

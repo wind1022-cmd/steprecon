@@ -187,7 +187,7 @@ class OpenAICompatBackend:
     name = "openai"
 
     def __init__(self, model=None, base_url=None, api_key=None, tool_mode="auto", temperature=0.2,
-                 max_tokens=4096, timeout=900, **_):
+                 max_tokens=4096, timeout=900, reasoning_effort=None, **_):
         self.model = model or os.environ.get("STEPRECON_MODEL", "qwen3:8b")
         self.base_url = (base_url or os.environ.get("STEPRECON_BASE_URL", "http://localhost:11434/v1")).rstrip("/")
         self.api_key = api_key or os.environ.get("STEPRECON_API_KEY") or os.environ.get("OPENAI_API_KEY") or "none"
@@ -196,6 +196,8 @@ class OpenAICompatBackend:
         self.tool_mode = tool_mode
         self.mode = "text" if tool_mode == "text" else "native"
         self.temperature, self.max_tokens, self.timeout = temperature, max_tokens, timeout
+        self.reasoning_effort = reasoning_effort     # low/medium/high for reasoning models (gpt-oss, ...)
+        self.last_info = ""
         self._last_native = False
 
     # -- conversation setup
@@ -234,6 +236,8 @@ class OpenAICompatBackend:
         for attempt in range(2):
             payload = {"model": self.model, "messages": self.messages, "temperature": self.temperature,
                        "max_tokens": self.max_tokens}
+            if self.reasoning_effort:
+                payload["reasoning_effort"] = self.reasoning_effort
             if self.mode == "native":
                 payload["tools"] = [{"type": "function", "function": {
                     "name": t["name"], "description": t["description"],
@@ -250,6 +254,13 @@ class OpenAICompatBackend:
             except urllib.error.URLError as e:
                 raise RuntimeError(f"cannot reach LLM server at {self.base_url}: {e.reason}") from None
         msg = data["choices"][0]["message"]
+        think = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        usage = data.get("usage") or {}
+        reason = data["choices"][0].get("finish_reason")
+        self.last_info = (f"[finish_reason={reason} output_tokens={usage.get('completion_tokens')} "
+                          f"reasoning_chars={len(think) if isinstance(think, str) else '?'}]")
+        if reason == "length":
+            self.last_info += " the answer was cut off: raise --max-tokens or use --reasoning-effort low"
         text = strip_think(msg.get("content") or "")
         calls, native = [], False
         for tc in msg.get("tool_calls") or []:

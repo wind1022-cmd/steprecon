@@ -21,6 +21,11 @@ def add_llm_args(ap):
     g.add_argument("--max-faces-prompt", type=int, default=None,
                    help="faces listed in the prompt (default 80; 30 is kinder to small context windows)")
     g.add_argument("--temperature", type=float, default=0.2, help="openai backend sampling temperature")
+    g.add_argument("--reasoning-effort", default=None, choices=["low", "medium", "high"],
+                   help="openai backend, reasoning models (gpt-oss...): how long the model thinks per turn. "
+                        "low is much faster")
+    g.add_argument("--max-tokens", type=int, default=None,
+                   help="openai backend: output limit per turn incl. reasoning (default 4096)")
     return g
 
 
@@ -30,7 +35,8 @@ def backend_from_args(a):
             raise SystemExit("ANTHROPIC_API_KEY is not set (or use --backend openai with a local model)")
         return llm.make_backend("anthropic", model=a.model)
     return llm.make_backend("openai", model=a.model, base_url=a.base_url, tool_mode=a.tool_mode,
-                            temperature=a.temperature)
+                            temperature=a.temperature, reasoning_effort=a.reasoning_effort,
+                            max_tokens=a.max_tokens)
 
 
 def run_kwargs(a):

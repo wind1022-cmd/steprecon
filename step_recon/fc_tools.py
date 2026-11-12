@@ -250,6 +250,46 @@ class Session:
             out["body"] = self._body_index()
         return out
 
+    def _no_effect(self, created, message):
+        """Drop a feature that changed nothing and say where the solid actually is."""
+        for n in created:
+            self.doc.removeObject(n)
+        feats = [o for o in self.body.Group if o.isDerivedFrom("PartDesign::Feature")]
+        if feats:
+            self.body.Tip = feats[-1]
+        self.doc.recompute()
+        out = {"ok": False, "error": message}
+        t = self._tip_shape()
+        if t is not None:
+            bb = t.BoundBox
+            out["solid_bbox"] = [round(v, 3) for v in (bb.XMin, bb.YMin, bb.ZMin, bb.XMax, bb.YMax, bb.ZMax)]
+        return out
+
+    def state(self):
+        """Short progress report attached to every shape-changing tool result (saves the model a compare call)."""
+        s = self.result_shape()
+        if s is None:
+            return None
+        r = cmp_mod.compare(self.ref, s)
+
+        def box(sh):
+            bb = sh.BoundBox
+            return [round(v, 3) for v in (bb.XMin, bb.YMin, bb.ZMin, bb.XMax, bb.YMax, bb.ZMax)]
+
+        out = {"converged": r["converged"], "xor_pct": round(r["xor_pct"], 3),
+               "volume": r["new_volume"], "target_volume": r["ref_volume"],
+               "bbox": box(s), "target_bbox": box(self.ref),
+               "faces": r["new_faces"], "target_faces": r["ref_faces"]}
+        for k in ("missing_regions", "extra_regions"):
+            if r.get(k):
+                out[k] = r[k][:3]
+        if not r["converged"]:
+            if out["bbox"] != out["target_bbox"] and r["volume_diff_pct"] < 1.0:
+                out["hint"] = "volume matches but the solid is in the wrong place or orientation: make bbox equal target_bbox"
+            elif r["xor_pct"] < 0.1:
+                out["hint"] = "shape matches; only the face count differs (a missing/extra fillet, chamfer or split face)"
+        return out
+
     # ---------- tools ----------
     def new_body(self):
         """Start another, separate body (one per disjoint solid of the reference) and make it active."""
@@ -272,12 +312,18 @@ class Session:
         return {"ok": True, "active_body": index, "bodies": self._bodies_info()}
 
     def pad(self, plane, geometry, length, offset=0, reversed=False, midplane=False):
+        before = self._tip_shape()
         sk = self._make_sketch(plane, offset, geometry)
         feat = self.body.newObject("PartDesign::Pad", "Pad")
         feat.Profile = sk
         feat.Length = float(length)
         feat.Reversed = bool(reversed)
         feat.Midplane = bool(midplane)
+        self.doc.recompute()
+        if before is not None and feat.isValid() and not feat.Shape.isNull() \
+                and abs(feat.Shape.Volume - before.Volume) < 1e-6:
+            return self._no_effect([feat.Name, sk.Name], "pad added nothing: the profile lies entirely inside the "
+                                   "existing solid (check plane, offset and direction)")
         return self._finish(feat, [feat.Name, sk.Name],
                             f"pad {plane}@{offset} len={length} rev={reversed} mid={midplane}")
 
@@ -299,6 +345,9 @@ class Session:
         if abs(feat.Shape.Volume - v0) < 1e-6 and feat.isValid():   # cut the wrong way -> flip once
             feat.Reversed = not feat.Reversed
             self.doc.recompute()
+            if feat.isValid() and not feat.Shape.isNull() and abs(feat.Shape.Volume - v0) < 1e-6:
+                return self._no_effect([feat.Name, sk.Name], "pocket removed nothing in either direction: the "
+                                       "sketch does not overlap the solid (check plane, offset and position)")
         return self._finish(feat, [feat.Name, sk.Name],
                             f"pocket {plane}@{offset} depth={depth} through={through_all} rev={feat.Reversed}")
 
