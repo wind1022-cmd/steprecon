@@ -2,8 +2,10 @@
 
 Works on any .FCStd made by run.py or machined.py. No AI model is used.
 
-1. See what can be varied (also written to <name>.params.csv):
+1. See what can be varied:
        fc.cmd doe.py out_machined\\housing.FCStd --list
+   writes <name>.params.csv and <name>.params.html - open the .html in a browser: four views of the part with a
+   numbered balloon on every feature, and a table saying which parameters belong to which number.
 
 2a. Full factorial from ranges or value lists (lengths in mm, angles in degrees):
        fc.cmd doe.py out_machined\\housing.FCStd --vary "Hole_D6_x4.Diameter1=5:8:4" --vary "Fillet_R3_x4.Radius=2,3,4"
@@ -23,7 +25,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
-from step_recon import params as P  # noqa: E402
+from step_recon import param_map, params as P  # noqa: E402
 import FreeCAD as App  # noqa: E402
 
 
@@ -125,6 +127,33 @@ def run(fcstd, runs, out_dir, save_fcstd=False, verbose=True):
         App.closeDocument(doc.Name)
 
 
+def write_parameter_files(fcstd):
+    """<name>.params.csv (number, feature, name, value, unit, position) and <name>.params.html (the same numbers
+    drawn on four views of the part). Returns (rows, csv path, html path or None)."""
+    fcstd = os.path.abspath(fcstd)
+    base = os.path.splitext(fcstd)[0]
+    doc = App.openDocument(fcstd)
+    try:
+        doc.recompute()
+        plist = P.collect(doc)
+        rows = param_map.table(doc, plist)
+        with open(base + ".params.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=["no", "feature", "name", "value", "unit", "x", "y", "z"])
+            w.writeheader()
+            w.writerows(rows)
+        page = None
+        try:
+            text = param_map.build_html(doc, plist, os.path.basename(base))
+            with open(base + ".params.html", "w", encoding="utf-8") as f:
+                f.write(text)
+            page = base + ".params.html"
+        except Exception as e:      # the drawing is a convenience: never lose the table over it
+            print(f"(could not draw the parameter map: {type(e).__name__}: {e})")
+        return rows, base + ".params.csv", page
+    finally:
+        App.closeDocument(doc.Name)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("fcstd", help="model written by run.py or machined.py")
@@ -141,20 +170,14 @@ def main():
     base = os.path.splitext(os.path.basename(a.fcstd))[0]
     here = os.path.dirname(os.path.abspath(a.fcstd))
     if a.list or not (a.vary or a.table):
-        doc = App.openDocument(os.path.abspath(a.fcstd))
-        doc.recompute()
-        plist = P.collect(doc)
-        App.closeDocument(doc.Name)
-        path = os.path.join(here, base + ".params.csv")
-        with open(path, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.writer(f)
-            w.writerow(["name", "value", "unit"])
-            for p in plist:
-                w.writerow([p["name"], round(p["value"], 6), "deg" if p["kind"] == "angle" else "mm"])
-        width = max([len(p["name"]) for p in plist] + [4])
-        for p in plist:
-            print(f"{p['name']:<{width}}  {p['value']:.6g} " + ("deg" if p["kind"] == "angle" else "mm"))
-        print(f"\n{len(plist)} parameters; also written to {path}")
+        plist, path, page = write_parameter_files(a.fcstd)
+        width = max([len(r["name"]) for r in plist] + [4])
+        print(f"{'no':>3}  {'name':<{width}}  value")
+        for r in plist:
+            print(f"{r['no']:>3}  {r['name']:<{width}}  {r['value']:.6g} {r['unit']}")
+        print(f"\n{len(plist)} parameters; table: {path}")
+        if page:
+            print(f"where each one is on the part (open in a browser): {page}")
         if not a.list:
             print('nothing to run: add --vary "NAME=a:b:n" or --table file.csv')
         return

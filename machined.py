@@ -13,9 +13,12 @@ import os
 import sys
 import time
 
+import FreeCAD as App
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 from step_recon import analyze, machined  # noqa: E402
+import doe  # noqa: E402  (parameter table and map)
 import run  # noqa: E402  (file/folder/wildcard expansion)
 
 
@@ -57,6 +60,13 @@ def main():
         except Exception as e:
             row["error"] = f"{type(e).__name__}: {e}"
             print(f"[{n}/{len(files)}] {base}: ERROR {row['error']}")
+        if not row["error"]:
+            try:
+                App.closeDocument(sess.doc.Name)
+                plist, _, page = doe.write_parameter_files(os.path.join(a.out, base + ".FCStd"))
+                print(f"    {len(plist)} parameters" + (f"; where they are: {page}" if page else ""))
+            except Exception as e:
+                print(f"    (parameter table not written: {type(e).__name__}: {e})")
         row["seconds"] = round(time.time() - t0, 1)
         rows.append(row)
         with open(os.path.join(a.out, "summary.csv"), "w", newline="", encoding="utf-8-sig") as fh:

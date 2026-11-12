@@ -116,6 +116,18 @@ report("an impossible variant fails cleanly and the next one still builds", not 
 sys.argv = ["doe.py", model, "--list"]
 doe.main()
 report("--list writes the parameter table", os.path.exists(os.path.join(tmp, "bracket.params.csv")))
+with open(os.path.join(tmp, "bracket.params.csv"), encoding="utf-8-sig") as f:
+    prow = list(csv.DictReader(f))
+bore_row = next(r for r in prow if r["name"] == bore)
+report("table gives feature number and position", bore_row["no"] == "1" and (float(bore_row["x"]), float(bore_row["y"])) == (20.0, 15.0),
+       str(bore_row))
+page = open(os.path.join(tmp, "bracket.params.html"), encoding="utf-8").read()
+nfeat = len({r["no"] for r in prow})
+report("parameter map: four views, every feature drawn and listed, self-contained",
+       page.count("<svg") == 4 and all(f'data-f="{k}"' in page for k in range(1, nfeat + 1))
+       and page.count("<tr data-f=") == nfeat and all(n in page for n in (fr3, fr2, ch, bore))
+       and "http://" not in page and "https://" not in page and page.count('class="hl"') >= 4 * nfeat - 2,
+       f"{len(page)} bytes, {nfeat} features")
 for bad, what in (("nope=1,2", "unknown parameter"), (f"{fr3}=1:2", "bad range")):
     try:
         sys.argv = ["doe.py", model, "--vary", bad, "--out", os.path.join(tmp, "x")]
