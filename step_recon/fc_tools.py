@@ -747,7 +747,11 @@ class Session:
         The corner point lies d away from the reference's surface; with t = angle between the two faces,
         a fillet of radius r gives d = r (1/sin(t/2) - 1), an equal chamfer of size c gives d = c cos(t/2)."""
         try:
-            d, _, info = self.ref.distToShape(Part.Vertex(mid))
+            # distance to the reference's SURFACE: at a concave edge the corner point lies inside the reference,
+            # where the distance to the solid itself would be zero
+            if getattr(self, "_ref_faces", None) is None:
+                self._ref_faces = Part.Compound(self.ref.Faces)
+            d, _, info = self._ref_faces.distToShape(Part.Vertex(mid))
             if d < 1e-5 or not info or info[0][0] != "Face":
                 return None
             kind = type(self.ref.Faces[info[0][1]].Surface).__name__

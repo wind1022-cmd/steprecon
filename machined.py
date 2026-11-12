@@ -1,5 +1,5 @@
-"""Complex parts (housings, castings): keep the shape as a frozen blank and turn the drilled holes and bores into
-editable, dimensioned features. No AI model is used - this is geometric recognition only, so it is fast and exact.
+"""Complex parts (housings, castings): keep the shape as a frozen blank and turn the drilled holes, constant fillets
+and equal chamfers into editable features with dimensions. No AI model is used - this is geometric recognition only, so it is fast and exact.
 
     fc.cmd machined.py C:\\parts\\housing.stp --out out_machined
     fc.cmd machined.py C:\\parts            (a folder: every STEP/IGES file in it)
@@ -34,7 +34,7 @@ def main():
     for n, f in enumerate(files, 1):
         base = os.path.splitext(os.path.basename(f))[0]
         t0 = time.time()
-        row = {"file": f, "holes": "", "features": "", "identical": "", "xor_pct": "", "sketches_constrained": "",
+        row = {"file": f, "holes": "", "fillets": "", "chamfers": "", "features": "", "identical": "", "xor_pct": "", "sketches_constrained": "",
                "seconds": "", "error": ""}
         try:
             ref = analyze.load_shape(f)
@@ -42,14 +42,16 @@ def main():
             saved = sess.save(os.path.join(a.out, base + ".FCStd"))
             cmp_ = sess.compare()
             sk = saved.get("sketches", {})
-            row.update(holes=rep["holes_made"], features=rep["features"], identical=bool(cmp_.get("converged")),
+            row.update(holes=rep["holes_made"], fillets=rep["fillets_made"], chamfers=rep["chamfers_made"],
+                       features=rep["features"], identical=bool(cmp_.get("converged")),
                        xor_pct=cmp_.get("xor_pct"),
                        sketches_constrained=f"{sk.get('fully_constrained', 0)}/{sk.get('sketches', 0)}")
             rep.update(file=f, identical=row["identical"], xor_pct=row["xor_pct"], sketches=sk, features_list=sess.log)
             with open(os.path.join(a.out, base + ".machined.json"), "w", encoding="utf-8") as fh:
                 json.dump(rep, fh, indent=2)
             note = f" ({len(rep['skipped'])} skipped)" if rep["skipped"] else ""
-            print(f"[{n}/{len(files)}] {base}: {rep['holes_made']} holes in {rep['features']} features{note}, "
+            print(f"[{n}/{len(files)}] {base}: {rep['holes_made']} holes, {rep['fillets_made']} filleted and "
+                  f"{rep['chamfers_made']} chamfered edges in {rep['features']} features{note}, "
                   f"identical={row['identical']} xor={row['xor_pct']}%, sketches fully constrained "
                   f"{row['sketches_constrained']}")
         except Exception as e:

@@ -1,15 +1,22 @@
-"""Split the machined holes of a complex part off as editable features - no model involved.
+"""Turn what can be expressed of a complex part into editable features - no model involved.
 
-For cast or moulded parts (housings, covers) a full feature tree is out of reach, but what gets changed in practice
-are the machined features. This module recognises round holes and bores in the reference, fills them to get the
-"blank" (kept as a frozen, non-parametric base), and cuts every hole again as a dimensioned feature:
+For cast or moulded parts (housings, covers) a full feature tree is out of reach, but the things one wants to vary
+are local: hole sizes and positions, fillet radii, chamfer sizes. This module recognises them in the reference,
+removes them to get a "blank" (kept as a frozen, non-parametric base) and puts each one back as a feature:
 
-    ImportedBlank  ->  Hole_D8_x6  ->  Hole_D25  ->  ...
+    ImportedBlank -> Hole_D8_x6 -> Hole_D25 -> Fillet_R3 -> Chamfer_1 -> ...
 
-The result is identical to the reference by construction; diameters, positions and depths are now parameters.
-Equal holes drilled from the same face form one feature (one sketch with several circles).
-Recognised: complete concave cylinders - through or blind, in any direction, including each step of a counterbore.
-Left in the blank: everything else (cones of drill points and countersinks, slots, threads, freeform shapes)."""
+How:
+  1. fillets and chamfers are taken off with the CAD kernel's defeaturing (faces removed, neighbours extended);
+  2. complete round holes are filled with plugs;
+  3. the holes are cut again as dimensioned pockets, the fillets and chamfers applied again as features, with
+     sizes measured from the reference.
+Nothing is taken on trust: every step is checked against the reference, and whatever does not come back exactly is
+left in the blank untouched. So the result always equals the reference; only the number of features varies.
+
+Recognised: complete concave cylinders (through or blind, any direction, each step of a counterbore);
+constant-radius fillets (straight, around circular edges, with their corner patches); equal-leg chamfers.
+Left in the blank: everything else (drill points, slots, threads, variable fillets, freeform shapes, drafts)."""
 import math
 
 import FreeCAD as App
@@ -26,8 +33,9 @@ def _canon(v):
     return v if v[big] > 0 else v * -1
 
 
+# ------------------------------------------------------------------ holes
 def find_holes(ref, min_radius=0.2):
-    """Complete concave cylinders of the reference: [{"axis", "foot", "radius", "t0", "t1", "faces"}], where a point
+    """Complete concave cylinders of the shape: [{"axis", "foot", "radius", "t0", "t1", "faces"}], where a point
     of the axis is foot + axis * t and the hole runs from t0 to t1."""
     groups = {}
     for i, f in enumerate(ref.Faces):
@@ -55,6 +63,12 @@ def find_holes(ref, min_radius=0.2):
     return holes
 
 
+def _hole_key(h):
+    """Identity of a hole that survives rebuilding the shape (face numbers do not)."""
+    return (round(h["axis"].x, 4), round(h["axis"].y, 4), round(h["axis"].z, 4), round(h["foot"].x, 3),
+            round(h["foot"].y, 3), round(h["foot"].z, 3), round(h["radius"], 4), round(h["t0"], 3), round(h["t1"], 3))
+
+
 def _plug(h):
     start = h["foot"] + h["axis"] * h["t0"]
     return Part.makeCylinder(h["radius"], h["t1"] - h["t0"], start, h["axis"])
@@ -71,50 +85,138 @@ def _open_end(ref, h):
     return h["t1"], h["axis"]
 
 
-def build(ref, _exclude=None, _round=0):
-    """Reference -> (Session with blank + hole features, report dict).
+# ------------------------------------------------------------------ fillets and chamfers
+def _neighbours(shape):
+    """face index -> [(edge, other face index)] via shared edges."""
+    by_edge = {}
+    for i, f in enumerate(shape.Faces):
+        for e in f.Edges:
+            by_edge.setdefault(e.hashCode(), []).append((e, i))
+    out = {i: [] for i in range(len(shape.Faces))}
+    for items in by_edge.values():
+        for a in range(len(items)):
+            for b in range(len(items)):
+                if a != b and items[a][1] != items[b][1] and items[a][0].isSame(items[b][0]):
+                    out[items[a][1]].append((items[a][0], items[b][1]))
+    return out
 
-    Every hole is checked after it has been cut again: it must remove exactly its own volume. One that does not
-    (the CAD kernel can fail where a hole enters through a curved face) is left in the blank as it is and the
-    part is built again without it, so the result stays identical to the reference in any case."""
-    exclude = set(_exclude or ())
-    report = {"holes_found": 0, "holes_made": 0, "features": 0, "skipped": []}
+
+def _normal_at(face, p):
+    try:
+        return face.normalAt(*face.Surface.parameter(p))
+    except Exception:
+        return None
+
+
+def _edge_mid(e):
+    return e.valueAt((e.FirstParameter + e.LastParameter) / 2.0)
+
+
+def find_blends(shape):
+    """Faces that look like dress-up features: {("fillet", radius) | ("chamfer",): [face indices]}.
+
+    fillet : a partial cylinder / torus / sphere that runs smoothly (tangent) into at least two different
+             neighbours which are not the same surface (that would be the other half of a hole or shaft);
+    chamfer: a narrow plane or a cone that meets two neighbours along its long edges at the same sharp angle.
+    This is only a first guess - build() keeps a group only if putting it back reproduces the reference."""
+    faces = shape.Faces
+    nb = _neighbours(shape)
+    groups = {}
+    for i, f in enumerate(faces):
+        s = f.Surface
+        kind = type(s).__name__
+        if kind in ("Cylinder", "Toroid", "Sphere"):
+            radius = s.MinorRadius if kind == "Toroid" else s.Radius
+            u0, u1, v0, v1 = f.ParameterRange
+            if kind == "Cylinder" and abs(u1 - u0) > math.pi + 1e-6:
+                continue                                    # more than half a turn: a hole, boss or shaft
+            if kind == "Toroid" and abs(v1 - v0) > math.pi + 1e-6:
+                continue
+            smooth = set()
+            for e, j in nb[i]:
+                g = faces[j]
+                gs = g.Surface
+                if type(gs).__name__ == kind == "Cylinder" and abs(gs.Radius - s.Radius) < 1e-6 \
+                        and gs.Axis.cross(s.Axis).Length < 1e-6 \
+                        and (gs.Center - s.Center).cross(s.Axis).Length < 1e-6:
+                    smooth = set()
+                    break                                   # the other half of the same cylinder
+                p = _edge_mid(e)
+                n1, n2 = _normal_at(f, p), _normal_at(g, p)
+                if n1 is not None and n2 is not None and n1.getAngle(n2) < math.radians(1.0):
+                    smooth.add(j)
+            if len(smooth) >= 2:
+                groups.setdefault(("fillet", round(radius, 4)), []).append(i)
+        elif kind in ("Plane", "Cone"):
+            edges = sorted(f.Edges, key=lambda e: -e.Length)
+            if len(edges) < 2 or (kind == "Plane" and len(f.Edges) != 4):
+                continue
+            long_edges = edges[:2]
+            if kind == "Plane":
+                width = f.Area / max(long_edges[0].Length, 1e-9)
+                if width > 0.35 * long_edges[0].Length:
+                    continue                                # not a narrow strip
+            angles = []
+            for e, j in nb[i]:
+                if not any(e.isSame(x) for x in long_edges):
+                    continue
+                p = _edge_mid(e)
+                n1, n2 = _normal_at(f, p), _normal_at(faces[j], p)
+                if n1 is not None and n2 is not None:
+                    angles.append(n1.getAngle(n2))
+            if len(angles) == 2 and abs(angles[0] - angles[1]) < math.radians(1.0) \
+                    and math.radians(20) < angles[0] < math.radians(70):
+                groups.setdefault(("chamfer",), []).append(i)
+    return groups
+
+
+def _defeature(shape, face_ids):
+    """Shape without those faces (neighbours extended), or None if the kernel cannot do it cleanly."""
+    try:
+        out = shape.defeaturing([shape.Faces[i] for i in face_ids])
+    except Exception:
+        return None
+    if out.isNull() or not out.isValid() or len(out.Solids) != len(shape.Solids) or len(out.Faces) >= len(shape.Faces):
+        return None
+    if abs(out.Volume - shape.Volume) > 0.2 * shape.Volume:      # a dress-up never changes the volume that much
+        return None
+    return out.Solids[0] if len(out.Solids) == 1 else out
+
+
+# ------------------------------------------------------------------ building
+def _cut_holes(sess, target, report, exclude):
+    """Fill the holes of `target`, use that as blank and cut them again. Returns the set of holes that failed."""
     holes = []
-    for h in find_holes(ref):
-        hid = tuple(h["faces"])
-        if hid in exclude:
-            report["skipped"].append(f"D{2 * h['radius']:g}: could not be cut again cleanly, left in the blank")
+    for h in find_holes(target):
+        key = _hole_key(h)
+        if key in exclude:
             continue
         plug = _plug(h)
         try:
-            overlap = plug.common(ref).Volume
+            overlap = plug.common(target).Volume
         except Exception:
             overlap = plug.Volume
         if overlap > 1e-6 * plug.Volume:        # something stands inside this cylinder: not a plain drilled hole
-            report["skipped"].append(f"D{2 * h['radius']:g}: not empty inside, left in the blank")
+            report["skipped"].append(f"hole D{2 * h['radius']:g}: not empty inside")
             continue
-        h["id"], h["plug"] = hid, plug
-        h["end"], h["out"] = _open_end(ref, h)
+        h["key"], h["plug"] = key, plug
+        h["end"], h["out"] = _open_end(target, h)
         holes.append(h)
-    report["holes_found"] = len(holes) + len(report["skipped"])
-    sess = fc_tools.Session(ref)
     if not holes:
-        sess.import_shape(ref, "blank (reference as is: no holes turned into features)")
-        return sess, report
-    blank = ref.fuse([h["plug"] for h in holes])
+        sess.import_shape(target, "blank (no holes turned into features)")
+        return set()
+    blank = target.fuse([h["plug"] for h in holes])
     try:
         refined = blank.copy().removeSplitter()
         if refined.isValid() and abs(refined.Volume - blank.Volume) <= 2e-4 * max(1.0, blank.Volume):
             blank = refined
     except Exception:
         pass
-    solids = blank.Solids
-    if len(solids) == 1:
-        blank = solids[0]
-    sess.import_shape(blank, f"blank (reference with {len(holes)} holes filled)")
+    if len(blank.Solids) == 1:
+        blank = blank.Solids[0]
+    sess.import_shape(blank, f"blank ({len(holes)} holes filled)")
 
-    # equal holes drilled from the same face in the same direction -> one feature
-    jobs = {}
+    jobs = {}       # equal holes drilled from the same face in the same direction -> one feature
     for h in holes:
         plane_off = (h["foot"] + h["axis"] * h["end"]).dot(h["out"])
         key = (round(h["out"].x, 5), round(h["out"].y, 5), round(h["out"].z, 5), round(plane_off, 3),
@@ -158,14 +260,102 @@ def build(ref, _exclude=None, _round=0):
                     break
                 sess.undo()
         if not ok:
-            failed.update(h["id"] for h in group)
+            failed.update(h["key"] for h in group)
             continue
         feat = sess.doc.getObject(r["feature"])
         d = round(2 * h0["radius"], 3)
         feat.Label = f"Hole_D{d:g}" + (f"_x{len(group)}" if len(group) > 1 else "")
         report["holes_made"] += len(group)
         report["features"] += 1
-    if failed and _round < 4:       # build again, leaving those holes in the blank
+    return failed
+
+
+def _dress(sess, report):
+    """Put fillets and chamfers back: the sharp edges of the solid that the reference lacks, with the sizes
+    measured there (Session.list_edges). Each group must bring the solid closer to the reference."""
+    for _ in range(40):
+        todo = [e for e in sess.list_edges(only_missing=True).get("edges", []) if e.get("suggest")]
+        todo = [e for e in todo if str(e["suggest"]) not in report["_refused"]]
+        if not todo:
+            return
+        # largest first: a big fillet has to exist before a small one can run over its end
+        first = max((e["suggest"] for e in todo), key=lambda s: list(s.values())[0])
+        ids = [e["edge"] for e in todo if e["suggest"] == first]
+        before = sess.compare()["xor_pct"]
+        kind, size = list(first.items())[0]
+        r = sess.fillet(ids, size) if kind == "fillet" else sess.chamfer(ids, size)
+        if r.get("ok") and sess.compare()["xor_pct"] < before - 1e-9:
+            feat = sess.doc.getObject(r["feature"])
+            feat.Label = (f"Fillet_R{size:g}" if kind == "fillet" else f"Chamfer_{size:g}") + \
+                (f"_x{len(ids)}" if len(ids) > 1 else "")
+            report[kind + "s_made"] += len(ids)
+            report["features"] += 1
+        else:
+            if r.get("ok"):
+                sess.undo()
+            report["_refused"].add(str(first))
+
+
+def _attempt(ref, blend_faces, exclude_holes):
+    """One build: take `blend_faces` off, holes out, everything back on. Returns (session, report, identical)."""
+    report = {"holes_made": 0, "fillets_made": 0, "chamfers_made": 0, "features": 0, "skipped": [], "_refused": set()}
+    target = ref
+    if blend_faces:
+        target = _defeature(ref, blend_faces)
+        if target is None:
+            return None, report, False
+    sess = fc_tools.Session(ref)
+    failed = _cut_holes(sess, target, report, exclude_holes)
+    if failed:
         App.closeDocument(sess.doc.Name)
-        return build(ref, exclude | failed, _round + 1)
+        return _attempt(ref, blend_faces, exclude_holes | failed)
+    if blend_faces:
+        _dress(sess, report)
+    c = sess.compare()
+    report["_excluded_holes"] = exclude_holes
+    return sess, report, bool(c.get("converged"))
+
+
+def build(ref):
+    """Reference -> (Session with blank + features, report dict). The result is always identical to the reference:
+    dress-ups that do not come back exactly are given up (first as a whole, then group by group)."""
+    blends = find_blends(ref)
+    everything = sorted(i for ids in blends.values() for i in ids)
+    plans = [everything] if everything else []
+    if len(blends) > 1:
+        plans += [sorted(ids) for _, ids in sorted(blends.items(), key=lambda kv: str(kv[0]))]
+    best = None
+    good_groups = []
+    for faces in plans:
+        sess, report, same = _attempt(ref, faces, set())
+        if sess is None:
+            continue
+        if same and faces == everything:
+            best = (sess, report)
+            break
+        if same:
+            good_groups.append(faces)
+        App.closeDocument(sess.doc.Name)
+    if best is None and good_groups:        # combine the groups that worked on their own, else take the biggest
+        for faces in ([sorted(i for g in good_groups for i in g)] if len(good_groups) > 1 else []) \
+                + [max(good_groups, key=len)]:
+            sess, report, same = _attempt(ref, faces, set())
+            if sess is not None and same:
+                best = (sess, report)
+                break
+            if sess is not None:
+                App.closeDocument(sess.doc.Name)
+    if best is None:                        # holes only: identical by construction
+        sess, report, _ = _attempt(ref, [], set())
+        best = (sess, report)
+    sess, report = best
+    for key in sorted(report.pop("_excluded_holes", set())):
+        report["skipped"].append(f"hole D{2 * key[6]:g}: could not be cut again cleanly")
+    refused = report.pop("_refused", set())
+    found = {("fillet R%g" % k[1]) if k[0] == "fillet" else "chamfer": len(v) for k, v in blends.items()}
+    report["blend_faces_found"] = found
+    if found and not (report["fillets_made"] or report["chamfers_made"]):
+        report["skipped"].append("fillets/chamfers: could not be reproduced exactly, left in the blank")
+    elif refused:
+        report["skipped"].append("some fillets/chamfers left in the blank: " + ", ".join(sorted(refused)))
     return sess, report
