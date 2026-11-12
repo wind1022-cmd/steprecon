@@ -46,7 +46,7 @@ conda create -n steprecon -c conda-forge freecad python=3.11 && conda activate s
 > Windows 이외 환경은 이 프로젝트를 Windows 11에서만 실제로 실행해 봤습니다. Linux/macOS 경로 탐색 코드는
 > 있지만 검증하지 못했습니다.
 
-설치 확인: `.\fc.ps1 run_tests.py` → `18/18 test files passed` (API 키·GPU·데이터셋 불필요, 약 15초)
+설치 확인: `.\fc.ps1 run_tests.py` → `20/20 test files passed` (API 키·GPU·데이터셋 불필요, 약 15초)
 
 ## 3. 사용법
 

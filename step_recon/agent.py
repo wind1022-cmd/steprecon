@@ -369,6 +369,7 @@ def run(step_path, out_dir, max_turns=40, client=None, backend=None, profile="fu
 
     if not finished:
         sess.save(out_path)
+    result["sketches"] = getattr(sess, "sketch_report", None)     # constrained and dimensioned on save
     final = sess.compare()
     result.update(converged=bool(final.get("converged")), xor_pct=final.get("xor_pct"),
                   features=sess.log, fcstd=out_path)

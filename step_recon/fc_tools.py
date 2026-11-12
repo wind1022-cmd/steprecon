@@ -194,6 +194,15 @@ class Session:
         n = f.normalAt(u, v)
         z = n * (-1.0 if into_material else 1.0)
         plane = {"origin": [pt.x, pt.y, pt.z], "normal": [z.x, z.y, z.z]}
+        # lay the sketch axes along the outline's longest straight side, with one of its ends as origin: the
+        # sides then come out horizontal / vertical and get plain dimensions, also on a tilted part
+        straight = [e for e in f.OuterWire.Edges if type(e.Curve).__name__ in ("Line", "LineSegment")]
+        if straight:
+            e0 = max(straight, key=lambda e: e.Length)
+            a, b = e0.valueAt(e0.FirstParameter), e0.valueAt(e0.LastParameter)
+            d = b - a
+            plane["origin"] = [a.x, a.y, a.z]
+            plane["x_dir"] = [d.x, d.y, d.z]
         o, x, y, _ = self._frame(plane)
         plane["x_dir"] = [x.x, x.y, x.z]
 
@@ -852,14 +861,62 @@ class Session:
             out["active_body"] = self._body_index()
         return out
 
-    def save(self, path):
+    def import_shape(self, shape, desc="import_shape"):
+        """Use an arbitrary solid as the frozen (non-parametric) base of the active body. Must be the first step."""
+        if self.history or self.body.BaseFeature is not None:
+            return {"ok": False, "error": "import must be the first step (undo features first)"}
+        base = self.doc.addObject("Part::Feature", "ImportedBlank")
+        base.Shape = shape
+        self.body.BaseFeature = base
         self.doc.recompute()
+        self._record([base.Name], desc)
+        return {"ok": True, "feature": base.Name, "volume": round(shape.Volume, 4), "faces": len(shape.Faces)}
+
+    def constrain(self):
+        """Fully constrain and dimension every sketch (see constrain.py). The shape must stay the same: if any
+        body changes, the document is left for the caller to judge via the returned "shape_changed"."""
+        from . import constrain as cons
+        self.doc.recompute()
+        before = [(b.Name, self._shape_of(b).Volume) for b in self.bodies if self._shape_of(b) is not None]
+        info = cons.constrain_document(self.doc)
+        # a Hole feature takes its diameter from its own property, not from the sketch circle: tie the two
+        # together so that the dimension shown in the sketch is the one that drives the hole
+        for o in self.doc.Objects:
+            if o.TypeId != "PartDesign::Hole":
+                continue
+            try:
+                sk = o.Profile[0] if isinstance(o.Profile, (tuple, list)) else o.Profile
+                i = next(k for k, c in enumerate(sk.Constraints) if c.Type == "Diameter")
+                if not sk.Constraints[i].Name:
+                    sk.renameConstraint(i, "HoleDiameter")
+                o.setExpression("Diameter", f"{sk.Name}.Constraints.{sk.Constraints[i].Name}")
+            except Exception:
+                pass
+        self.doc.recompute()
+        after = {b.Name: self._shape_of(b).Volume for b in self.bodies if self._shape_of(b) is not None}
+        info["shape_changed"] = any(abs(after.get(n, 0.0) - v) > 1e-6 * max(1.0, abs(v)) for n, v in before)
+        return info
+
+    def save(self, path, constrain=True):
+        self.doc.recompute()
+        out = {"ok": True, "path": path}
+        if constrain:
+            try:
+                c = self.constrain()
+                out["sketches"] = {k: c[k] for k in ("sketches", "fully_constrained", "geometric", "dimensions")}
+                if c["restored"]:
+                    out["sketches"]["left_unconstrained"] = c["restored"]
+                if c["shape_changed"]:
+                    out["sketches"]["warning"] = "the shape changed while constraining"
+            except Exception as e:
+                out["sketches"] = {"error": f"{type(e).__name__}: {e}"}
+        self.sketch_report = out.get("sketches")
         self.doc.saveAs(path)
         try:
             self._write_gui_visibility(path)
         except Exception:
             pass    # the model itself is saved; only the display defaults are missing
-        return {"ok": True, "path": path}
+        return out
 
     def _write_gui_visibility(self, path):
         """A file saved without the GUI has no display data, and FreeCAD then opens it with every Body and

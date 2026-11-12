@@ -38,6 +38,28 @@ def sampled_xor_pct(ref, new, n=20000, seed=0):
     return diff / n * box_vol / ref.Volume * 100
 
 
+_FACES = {}
+
+
+def face_count(shape):
+    """Number of faces after merging faces that lie on the same surface.
+    STEP files from other CAD systems usually store a cylinder as two half faces (and sometimes split planes);
+    a rebuilt cylinder is one face. Counting raw faces would then never match although the shapes are identical."""
+    key = (shape.hashCode(), len(shape.Faces), round(shape.Volume, 6))
+    if key not in _FACES:
+        n = len(shape.Faces)
+        try:
+            refined = shape.copy().removeSplitter()
+            if refined.isValid() and abs(refined.Volume - shape.Volume) <= 2e-4 * max(1.0, abs(shape.Volume)):
+                n = len(refined.Faces)
+        except Exception:
+            pass
+        if len(_FACES) > 200:
+            _FACES.clear()
+        _FACES[key] = n
+    return _FACES[key]
+
+
 def compare(ref, new, tol=1e-4):
     """Return metrics + hints about where the shapes differ."""
     vr, vn = ref.Volume, new.Volume
@@ -81,7 +103,7 @@ def compare(ref, new, tol=1e-4):
             for k in ("missing_volume", "extra_volume", "missing_regions", "extra_regions"):
                 res.pop(k, None)    # boolean-derived hints are not trustworthy in this case
     res["ref_solids"], res["new_solids"] = len(ref.Solids), len(new.Solids)
-    res["ref_faces"], res["new_faces"] = len(ref.Faces), len(new.Faces)
+    res["ref_faces"], res["new_faces"] = face_count(ref), face_count(new)
     res["ref_face_types"], res["new_face_types"] = _hist(ref), _hist(new)
     res["converged"] = bool(res["xor_pct"] < 0.1 and res["ref_faces"] == res["new_faces"])
     if inconsistent and res["volume_diff_pct"] >= 0.1:
