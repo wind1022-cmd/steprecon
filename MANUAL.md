@@ -40,7 +40,7 @@ GitHub에서 코드를 내려받아, 로컬 AI(Ollama)가 STEP 파일과 같은 
 ```
 .\fc.cmd run_tests.py
 ```
-마지막 줄에 `16/16 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
+마지막 줄에 `17/17 test files passed`가 나오면 정상입니다. 약 20초 걸리고, AI 모델이나 인터넷은 필요 없습니다.
 
 ## 4. 로컬 AI(Ollama) 준비
 1. https://ollama.com 에서 Ollama를 받아 설치합니다.
@@ -105,6 +105,27 @@ cmd 창이면 `set ANTHROPIC_BASE_URL=https://<게이트웨이 주소>`, `set AN
 - 부품의 형상 요약(치수, 면 목록)이 게이트웨이로 전송됩니다. 사내 규정상 허용되는 용도인지 확인하세요.
 - 게이트웨이가 OpenAI 방식(`/v1/chat/completions`)도 지원하면 `--backend openai --base-url https://<주소>/v1`과
   `STEPRECON_API_KEY` 환경 변수로도 됩니다.
+
+### 5-4. 결과를 CATIA V5 파트로 옮기기 (시험 단계)
+FreeCAD에서 맞춰 낸 피처 트리를 CATIA V5(R34 기준으로 작성)에 그대로 다시 만들어, 히스토리가 있는 `.CATPart`로
+저장합니다. CATIA의 기본 자동화 기능만 쓰므로 추가 설치나 라이선스는 필요 없습니다.
+
+1. CATIA V5를 실행해 둡니다.
+2. 5-2에서 만든 결과 파일(`.FCStd`)을 지정해 실행합니다.
+   ```
+   .\fc.cmd to_catia.py "out_parts\test.FCStd" --ref "C:\parts\test.stp"
+   ```
+3. CATIA에 새 파트가 생기고 스케치, 패드, 포켓이 차례로 만들어집니다. 화면에는 피처마다 한 줄씩 나옵니다.
+   - `OK   Pad  variant=0  mismatch=0.000%` : FreeCAD에서의 부피·무게중심과 일치
+   - `BAD  ...` : 일치하지 않음. 그 줄과 `(...)` 안의 메시지를 확인
+   - `SKIPPED ...` : 아직 옮기지 못하는 피처
+4. 결과는 `.FCStd`와 같은 폴더에 `test.CATPart`, `test.catia.stp`(비교용), `test.catia.log`로 남습니다.
+   `--ref`를 주면 CATIA가 만든 형상을 원본 STEP과 다시 비교해 `converged`와 `xor`를 알려 줍니다.
+
+- 옮겨지는 피처: 패드, 포켓, 단순 구멍(포켓으로). **필렛·모따기·패턴·회전체 등은 아직 옮기지 못합니다.**
+- 이 기능은 CATIA 없이 작성되어 실제 CATIA에서는 검증되지 않았습니다. 오류가 나면 화면 내용과
+  `test.catia.log`를 그대로 알려 주세요.
+- 매크로만 만들고 직접 실행하려면 `--no-run`을 붙입니다(`test.catvbs`가 생깁니다).
 
 ## 6. 결과 보기
 | 파일 | 내용 |
